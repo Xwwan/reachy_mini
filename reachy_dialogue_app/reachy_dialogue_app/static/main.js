@@ -4,6 +4,10 @@ let levelTimerId = null;
 let transcriptTimerId = null;
 let isRecording = false;
 let lastRecordingStats = null;
+let playbackTestStartedAt = 0;
+let playbackTestTimerId = null;
+let playbackTestLevelTimerId = null;
+let isPlaybackTestRecording = false;
 
 const els = {
     serviceUrl: document.getElementById("service-url"),
@@ -13,6 +17,12 @@ const els = {
     healthBtn: document.getElementById("health-btn"),
     recordBtn: document.getElementById("record-btn"),
     recordingTime: document.getElementById("recording-time"),
+    playbackTestBtn: document.getElementById("playback-test-btn"),
+    playbackTestTime: document.getElementById("playback-test-time"),
+    playbackTestStatus: document.getElementById("playback-test-status"),
+    playbackTestLevelFill: document.getElementById("playback-test-level-fill"),
+    playbackTestLevelText: document.getElementById("playback-test-level-text"),
+    playbackTestResult: document.getElementById("playback-test-result"),
     micLevelFill: document.getElementById("mic-level-fill"),
     micLevelText: document.getElementById("mic-level-text"),
     liveTranscript: document.getElementById("live-transcript"),
@@ -20,6 +30,7 @@ const els = {
     connectionStatus: document.getElementById("connection-status"),
     transcript: document.getElementById("transcript"),
     reply: document.getElementById("reply"),
+    debugInfo: document.getElementById("debug-info"),
 };
 
 async function loadSettings() {
@@ -72,6 +83,9 @@ async function toggleRecording() {
 }
 
 async function startRecording() {
+    if (isPlaybackTestRecording) {
+        throw new Error("请先停止机器人麦克风回放测试。");
+    }
     await saveSettings();
     lastRecordingStats = null;
     const response = await fetch("/api/robot-mic/start", { method: "POST" });
@@ -92,9 +106,80 @@ async function startRecording() {
     updateMicLevel().catch((error) => setStatus(error.message || String(error)));
     renderRobotTranscript({ text: "", error: null });
     updateRobotTranscript().catch((error) => setStatus(error.message || String(error)));
+    updateDebugInfo().catch((error) => setStatus(error.message || String(error)));
     els.recordBtn.textContent = "停止并发送";
     els.recordBtn.classList.add("recording");
     setStatus("正在用机器人麦克风录音");
+}
+
+async function togglePlaybackTest() {
+    if (isPlaybackTestRecording) {
+        await stopPlaybackTest();
+        return;
+    }
+    await startPlaybackTest();
+}
+
+async function startPlaybackTest() {
+    if (isRecording) {
+        throw new Error("请先停止语音聊天录音。");
+    }
+    const response = await fetch("/api/robot-mic/playback-test/start", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok || result.error) {
+        throw new Error(result.detail || result.error?.message || "机器人麦克风回放测试启动失败");
+    }
+    isPlaybackTestRecording = true;
+    playbackTestStartedAt = Date.now();
+    playbackTestTimerId = window.setInterval(updatePlaybackTestTimer, 250);
+    playbackTestLevelTimerId = window.setInterval(() => {
+        updatePlaybackTestLevel().catch((error) => setStatus(error.message || String(error)));
+    }, 200);
+    els.playbackTestBtn.textContent = "停止并播放";
+    els.playbackTestBtn.classList.add("recording");
+    els.recordBtn.disabled = true;
+    els.playbackTestStatus.textContent = "录音中";
+    els.playbackTestResult.textContent = `采样率 ${result.sample_rate} Hz`;
+    updatePlaybackTestTimer();
+    updatePlaybackTestLevel().catch((error) => setStatus(error.message || String(error)));
+    setStatus("正在录制机器人麦克风回放测试");
+}
+
+async function stopPlaybackTest() {
+    if (!isPlaybackTestRecording) {
+        return;
+    }
+    isPlaybackTestRecording = false;
+    window.clearInterval(playbackTestTimerId);
+    window.clearInterval(playbackTestLevelTimerId);
+    playbackTestTimerId = null;
+    playbackTestLevelTimerId = null;
+    els.playbackTestBtn.textContent = "正在播放...";
+    els.playbackTestBtn.disabled = true;
+    els.playbackTestBtn.classList.remove("recording");
+    els.playbackTestStatus.textContent = "播放中";
+    setStatus("正在从机器人扬声器播放刚录到的麦克风音频");
+    try {
+        const response = await fetch("/api/robot-mic/playback-test/stop", { method: "POST" });
+        const result = await response.json();
+        if (!response.ok || result.error) {
+            throw new Error(result.detail || result.error?.message || "机器人麦克风回放测试失败");
+        }
+        renderPlaybackTestLevel(result);
+        els.playbackTestStatus.textContent = result.playback_finished ? "完成" : "已发送";
+        els.playbackTestResult.textContent =
+            `${formatSeconds(result.duration_seconds)} · RMS ${formatLevel(result.rms)} · 峰值 ${formatLevel(result.peak)}`;
+        setStatus(result.playback_finished ? "机器人麦克风回放测试完成" : "机器人麦克风音频已发送到播放器");
+    } catch (error) {
+        els.playbackTestStatus.textContent = "失败";
+        els.playbackTestResult.textContent = describeError(error);
+        setStatus(describeError(error));
+    } finally {
+        els.playbackTestBtn.textContent = "开始测试";
+        els.playbackTestBtn.disabled = false;
+        els.recordBtn.disabled = false;
+        els.playbackTestTime.textContent = "00:00";
+    }
 }
 
 async function stopRecording() {
@@ -116,20 +201,75 @@ async function stopRecording() {
 
 async function sendRecording() {
     try {
-        const recordingResponse = await fetch("/api/robot-mic/stop", { method: "POST" });
-        const recording = await recordingResponse.json();
-        if (!recordingResponse.ok || recording.error) {
-            throw new Error(recording.detail || recording.error?.message || "机器人麦克风录音失败");
+        const response = await fetch("/api/robot-mic/stop-stream", { method: "POST" });
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.detail || payload.error?.message || "机器人麦克风录音失败");
         }
-        lastRecordingStats = recording;
-        renderMicLevel(recording);
-        renderRobotTranscript({
-            text: recording.live_transcript,
-            error: recording.live_transcript_error,
+
+        let reply = "";
+        let transcript = "";
+        let finalPayload = null;
+        let audioChunkCount = 0;
+        els.reply.textContent = "";
+        setStatus("正在生成回复...");
+
+        await readSseStream(response, ({ event, data }) => {
+            if (event === "recording") {
+                lastRecordingStats = data;
+                renderMicLevel(data);
+                return;
+            }
+            if (event === "debug") {
+                renderDebugInfo(data);
+                return;
+            }
+            if (event === "transcript") {
+                transcript = data.transcript || transcript;
+                renderRobotTranscript({ text: transcript, error: null });
+                els.transcript.textContent = transcript || "(未识别到文本)";
+                setStatus("已识别语音，正在流式生成回复...");
+                return;
+            }
+            if (event === "meta") {
+                setStatus("已连接模型流");
+                return;
+            }
+            if (event === "delta") {
+                reply += data.delta || "";
+                els.reply.textContent = reply || " ";
+                return;
+            }
+            if (event === "audio") {
+                audioChunkCount += 1;
+                setStatus(`正在接收 TTS 音频 ${audioChunkCount}`);
+                return;
+            }
+            if (event === "done") {
+                finalPayload = data;
+                transcript = data.transcript || transcript;
+                reply = data.reply || reply;
+                els.transcript.textContent = transcript || "(未识别到文本)";
+                els.reply.textContent = reply || "(没有回复)";
+                setStatus(
+                    data.audio_base64 || audioChunkCount > 0
+                        ? "正在播放机器人回复..."
+                        : "流式回复完成",
+                );
+                return;
+            }
+            if (event === "playback_done") {
+                setStatus("机器人回复完成");
+                return;
+            }
+            if (event === "error") {
+                throw new Error(data.message || "流式回复失败");
+            }
         });
-        els.transcript.textContent = recording.transcript || recording.live_transcript || "(未识别到文本)";
-        els.reply.textContent = recording.reply || "(没有回复)";
-        setStatus("已发送给机器人播放");
+
+        if (!finalPayload && !reply) {
+            els.reply.textContent = "(没有回复)";
+        }
     } catch (error) {
         setStatus(describeError(error));
     } finally {
@@ -146,6 +286,13 @@ function updateTimer() {
     els.recordingTime.textContent = `${minutes}:${rest}`;
 }
 
+function updatePlaybackTestTimer() {
+    const seconds = Math.floor((Date.now() - playbackTestStartedAt) / 1000);
+    const minutes = String(Math.floor(seconds / 60)).padStart(2, "0");
+    const rest = String(seconds % 60).padStart(2, "0");
+    els.playbackTestTime.textContent = `${minutes}:${rest}`;
+}
+
 async function updateMicLevel() {
     if (!isRecording) {
         return;
@@ -156,12 +303,31 @@ async function updateMicLevel() {
         throw new Error(level.detail || level.error?.message || "读取麦克风音量失败");
     }
     renderMicLevel(level);
+    updateDebugInfo().catch((error) => setStatus(error.message || String(error)));
+}
+
+async function updatePlaybackTestLevel() {
+    if (!isPlaybackTestRecording) {
+        return;
+    }
+    const response = await fetch("/api/robot-mic/playback-test/level");
+    const level = await response.json();
+    if (!response.ok || level.error) {
+        throw new Error(level.detail || level.error?.message || "读取回放测试音量失败");
+    }
+    renderPlaybackTestLevel(level);
 }
 
 function renderMicLevel(level) {
     const normalized = clamp01(Number(level.level || 0));
     els.micLevelFill.style.width = `${Math.round(normalized * 100)}%`;
     els.micLevelText.textContent = `RMS ${formatLevel(level.rms)} · 峰值 ${formatLevel(level.peak)}`;
+}
+
+function renderPlaybackTestLevel(level) {
+    const normalized = clamp01(Number(level.level || 0));
+    els.playbackTestLevelFill.style.width = `${Math.round(normalized * 100)}%`;
+    els.playbackTestLevelText.textContent = `RMS ${formatLevel(level.rms)} · 峰值 ${formatLevel(level.peak)}`;
 }
 
 async function updateRobotTranscript() {
@@ -177,6 +343,19 @@ async function updateRobotTranscript() {
     renderRobotTranscript(transcript);
 }
 
+async function updateDebugInfo() {
+    const response = await fetch("/api/robot-mic/debug");
+    const debug = await response.json();
+    if (!response.ok || debug.error) {
+        throw new Error(debug.detail || debug.error?.message || "读取诊断信息失败");
+    }
+    renderDebugInfo(debug);
+}
+
+function renderDebugInfo(debug) {
+    els.debugInfo.textContent = JSON.stringify(debug, null, 2);
+}
+
 function renderRobotTranscript(transcript) {
     if (transcript.error) {
         els.liveTranscript.textContent = transcript.error;
@@ -184,6 +363,69 @@ function renderRobotTranscript(transcript) {
     }
     const text = String(transcript.text || "").trim();
     els.liveTranscript.textContent = text || (isRecording ? "正在听..." : "等待录音");
+}
+
+async function readSseStream(response, onEvent) {
+    if (!response.body) {
+        throw new Error("浏览器不支持流式响应读取");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+            break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split(/\n\n/);
+        buffer = frames.pop() || "";
+        for (const frame of frames) {
+            const event = parseSseFrame(frame);
+            if (event) {
+                onEvent(event);
+            }
+        }
+    }
+
+    buffer += decoder.decode();
+    const tail = buffer.trim();
+    if (tail) {
+        const event = parseSseFrame(tail);
+        if (event) {
+            onEvent(event);
+        }
+    }
+}
+
+function parseSseFrame(frame) {
+    let event = "message";
+    const dataLines = [];
+    for (const rawLine of frame.split(/\n/)) {
+        const line = rawLine.replace(/\r$/, "");
+        if (!line || line.startsWith(":")) {
+            continue;
+        }
+        if (line.startsWith("event:")) {
+            event = line.slice("event:".length).trim() || "message";
+            continue;
+        }
+        if (line.startsWith("data:")) {
+            dataLines.push(line.slice("data:".length).trimStart());
+        }
+    }
+    if (dataLines.length === 0) {
+        return null;
+    }
+    const payload = dataLines.join("\n");
+    let data;
+    try {
+        data = JSON.parse(payload);
+    } catch {
+        data = { text: payload };
+    }
+    return { event, data };
 }
 
 function setStatus(text) {
@@ -227,6 +469,10 @@ els.healthBtn.addEventListener("click", () => {
 
 els.recordBtn.addEventListener("click", () => {
     toggleRecording().catch((error) => setStatus(error.message || String(error)));
+});
+
+els.playbackTestBtn.addEventListener("click", () => {
+    togglePlaybackTest().catch((error) => setStatus(error.message || String(error)));
 });
 
 for (const input of [els.serviceUrl, els.conversationId, els.gesture, els.ttsSampleRate]) {

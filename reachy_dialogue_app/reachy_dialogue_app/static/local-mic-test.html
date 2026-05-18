@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Reachy Mini Voice Dialogue</title>
+    <title>Local Mic Dialogue Test</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -12,11 +12,11 @@
     <main class="app-shell">
         <header class="topbar">
             <div>
-                <h1>Reachy Mini Voice</h1>
+                <h1>Local Mic Test</h1>
                 <p id="connection-status">未检查服务</p>
             </div>
             <div class="topbar-actions">
-                <a class="secondary-link" href="/static/local-mic-test.html">本机麦克风测试</a>
+                <a class="secondary-link" href="/">机器人页面</a>
                 <button id="health-btn" type="button">检查</button>
             </div>
         </header>
@@ -31,25 +31,25 @@
                 <input id="conversation-id" type="text" autocomplete="off">
             </label>
             <label>
-                <span>回复动作</span>
-                <select id="gesture">
-                    <option value="shake_head">摇头</option>
-                    <option value="antenna_wave">天线摆动</option>
-                    <option value="none">不动作</option>
+                <span>TTS</span>
+                <select id="tts-enabled">
+                    <option value="true">播放</option>
+                    <option value="false">不播放</option>
                 </select>
             </label>
             <label>
-                <span>TTS 采样率</span>
-                <input id="tts-sample-rate" type="number" min="8000" step="1000">
+                <span>目标采样率</span>
+                <input id="sample-rate" type="number" value="16000" min="16000" max="16000" step="1" disabled>
             </label>
         </section>
 
-        <section class="voice-panel" aria-label="语音聊天">
+        <section class="voice-panel" aria-label="本机麦克风">
             <button id="record-btn" class="record-button" type="button">开始录音</button>
+            <button id="abort-btn" class="record-button secondary" type="button" disabled>取消</button>
             <div id="recording-time">00:00</div>
-            <div class="meter" aria-label="机器人麦克风音量">
+            <div class="meter" aria-label="本机麦克风音量">
                 <div class="meter-header">
-                    <span>麦克风音量</span>
+                    <span>本机麦克风音量</span>
                     <strong id="mic-level-text">RMS 0.00000</strong>
                 </div>
                 <div class="meter-track">
@@ -57,30 +57,9 @@
                 </div>
             </div>
             <div class="live-caption" aria-live="polite">
-                <span>实时字幕（机器人麦克风）</span>
+                <span>实时字幕（电脑麦克风）</span>
                 <p id="live-transcript">等待录音</p>
             </div>
-        </section>
-
-        <section class="playback-test-panel" aria-label="机器人麦克风回放测试">
-            <div class="section-heading">
-                <span>机器人麦克风回放测试</span>
-                <strong id="playback-test-status">待机</strong>
-            </div>
-            <div class="playback-test-controls">
-                <button id="playback-test-btn" class="secondary-action" type="button">开始测试</button>
-                <div id="playback-test-time">00:00</div>
-            </div>
-            <div class="meter" aria-label="回放测试音量">
-                <div class="meter-header">
-                    <span>测试音量</span>
-                    <strong id="playback-test-level-text">RMS 0.00000</strong>
-                </div>
-                <div class="meter-track">
-                    <div id="playback-test-level-fill" class="meter-fill"></div>
-                </div>
-            </div>
-            <p id="playback-test-result" class="test-result">等待测试</p>
         </section>
 
         <section class="conversation" aria-label="对话记录">
@@ -89,7 +68,7 @@
                 <p id="transcript">等待录音</p>
             </div>
             <div class="message robot">
-                <span>Reachy 回答</span>
+                <span>模型回答</span>
                 <p id="reply">服务返回后会显示在这里</p>
             </div>
         </section>
@@ -102,7 +81,7 @@
         <div id="status-line" role="status">准备就绪</div>
     </main>
 
-    <script src="/static/main.js"></script>
+    <script src="/static/local-mic-test.js"></script>
 </body>
 
 </html>

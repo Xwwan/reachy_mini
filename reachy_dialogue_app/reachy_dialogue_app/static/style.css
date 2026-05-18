@@ -43,6 +43,12 @@ select {
     margin-bottom: 16px;
 }
 
+.topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 .topbar h1 {
     margin: 0;
     font-size: 1.45rem;
@@ -57,6 +63,8 @@ select {
 
 .settings-panel,
 .conversation,
+.debug-panel,
+.playback-test-panel,
 .voice-panel {
     background: var(--panel);
     border: 1px solid var(--line);
@@ -99,6 +107,20 @@ button {
     cursor: pointer;
 }
 
+.secondary-link {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
+    color: var(--primary);
+    background: #fff;
+    font-size: 0.9rem;
+    text-decoration: none;
+}
+
 button:active {
     background: var(--primary-dark);
 }
@@ -123,6 +145,18 @@ button:disabled {
 
 .record-button.recording {
     background: var(--danger);
+}
+
+.secondary-action {
+    background: var(--robot);
+}
+
+.secondary-action.recording {
+    background: var(--danger);
+}
+
+.record-button.secondary {
+    background: var(--muted);
 }
 
 #recording-time {
@@ -197,9 +231,71 @@ button:disabled {
     color: var(--muted);
 }
 
+.playback-test-panel {
+    display: grid;
+    gap: 12px;
+}
+
+.section-heading,
+.playback-test-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.section-heading span {
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+.section-heading strong,
+#playback-test-time {
+    color: var(--text);
+    font-size: 0.9rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.playback-test-controls button {
+    flex: 1;
+}
+
+.test-result {
+    margin: 0;
+    min-height: 24px;
+    color: var(--muted);
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
 .conversation {
     display: grid;
     gap: 12px;
+}
+
+.debug-panel {
+    display: grid;
+    gap: 6px;
+}
+
+.debug-panel span {
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+.debug-panel pre {
+    margin: 0;
+    max-height: 180px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px;
+    background: #0f172a;
+    color: #e2e8f0;
+    font-size: 0.8rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 .message {
