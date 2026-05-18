@@ -1,6 +1,8 @@
 import json
+import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +14,8 @@ from pydantic import BaseModel
 EMOTIONS = ['不屑', '愤怒', '惊恐', '难过', '兴奋', '静态']
 DEFAULT_EMOTION = '静态'
 CONFIG_ENV = 'REACHY_EMOJI_CONFIG'
+DEBUG_ENV = 'REACHY_EMOJI_DEBUG'
+DEBUG_LOG_ENV = 'REACHY_EMOJI_DEBUG_LOG'
 VIDEO_ROOT = Path(__file__).resolve().parent / 'videos'
 DEFAULT_CONFIG = Path(__file__).resolve().parent / 'config.json'
 
@@ -20,6 +24,10 @@ _pending_emotion = None
 _pending_event = threading.Event()
 _stop_event = threading.Event()
 _state_lock = threading.Lock()
+
+
+def _log():
+    return logging.getLogger('reachy_emoji')
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,7 @@ def _load_config():
         raise FileNotFoundError(f'Config not found: {config_path}')
     with config_path.open('r', encoding='utf-8') as handle:
         config = json.load(handle)
+    _log().debug('Loaded config from %s', config_path)
     return config_path, config
 
 
@@ -93,30 +102,46 @@ def _create_player():
         audio='no',
         osd_level=0,
         term_osd='no',
+        keep_open='yes',
     )
 
 
 def _play_once(player, path):
+    _log().debug('Play once: %s', path)
     player.loop_file = 'no'
-    player.play(str(path))
-    player.wait_for_playback()
+    player.command('loadfile', str(path), 'replace')
+    player.pause = False
+    started = False
+    duration = None
+    start_time = time.monotonic()
+    while not _stop_event.is_set():
+        time_pos = getattr(player, 'time_pos', None)
+        if time_pos is not None:
+            started = True
+        if duration is None:
+            duration = getattr(player, 'duration', None)
+        if duration is not None and time_pos is not None and time_pos >= max(duration - 0.05, 0):
+            return
+        if started and getattr(player, 'core_idle', False):
+            _log().debug('Play once finished by idle: %s', path)
+            return
+        if time.monotonic() - start_time > 30:
+            _log().warning('Play once timeout: %s', path)
+            return
+        _stop_event.wait(timeout=0.05)
 
 
 def _play_loop_until_change(player, path):
+    _log().debug('Play loop: %s', path)
     player.loop_file = 'inf'
-    player.play(str(path))
+    player.command('loadfile', str(path), 'replace')
     while not _stop_event.is_set():
         if _pending_event.wait(timeout=0.1):
-            player.command('stop')
-            try:
-                player.wait_for_playback(timeout=2)
-            except TimeoutError:
-                pass
+            _log().debug('Loop interrupted for switch')
             return
-        try:
-            player.wait_for_event(timeout=0.1)
-        except TimeoutError:
-            pass
+        if getattr(player, 'core_idle', False):
+            player.command('loadfile', str(path), 'replace')
+        _stop_event.wait(timeout=0.05)
 
 
 def change_emotion(emotion):
@@ -126,9 +151,11 @@ def change_emotion(emotion):
     global _pending_emotion
     with _state_lock:
         if emotion == current_emotion:
+            _log().debug('Ignored emotion (same as current): %s', emotion)
             return
         _pending_emotion = emotion
         _pending_event.set()
+        _log().debug('Queued emotion: %s', emotion)
 
 
 def _consume_pending():
@@ -137,6 +164,8 @@ def _consume_pending():
         emotion = _pending_emotion
         _pending_emotion = None
         _pending_event.clear()
+        if emotion:
+            _log().debug('Consumed pending emotion: %s', emotion)
         return emotion
 
 
@@ -144,6 +173,7 @@ def _set_current_emotion(emotion):
     global current_emotion
     with _state_lock:
         current_emotion = emotion
+        _log().debug('Current emotion set: %s', emotion)
 
 
 def _resolve_signal_to_emotion(signal_value):
@@ -154,6 +184,7 @@ def _resolve_signal_to_emotion(signal_value):
         raise HTTPException(status_code=404, detail='Unknown signal')
     if emotion not in EMOTIONS:
         raise HTTPException(status_code=400, detail='Unknown emotion')
+    _log().debug('Signal resolved: %s -> %s', signal_value, emotion)
     return emotion
 
 
@@ -189,7 +220,7 @@ def _create_app():
 
 def _start_server_thread(host, port):
     app = _create_app()
-    config = uvicorn.Config(app, host=host, port=port, log_level='info')
+    config = uvicorn.Config(app, host=host, port=port, log_level='info', access_log=False)
     server = uvicorn.Server(config)
 
     thread = threading.Thread(target=server.run, name='reachy-emoji-api', daemon=True)
@@ -198,6 +229,15 @@ def _start_server_thread(host, port):
 
 
 def main():
+    handlers = None
+    if os.environ.get(DEBUG_ENV):
+        log_path = os.environ.get(DEBUG_LOG_ENV)
+        if log_path:
+            handlers = [logging.FileHandler(log_path, encoding='utf-8')]
+        logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s', handlers=handlers)
+    else:
+        logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+
     _, config = _load_config()
     server_cfg = config.get('server', {})
     host = server_cfg.get('host', '0.0.0.0')
@@ -215,6 +255,14 @@ def main():
         while not _stop_event.is_set():
             files = emotion_files[current_emotion]
             _play_once(player, files.entry)
+            _log().debug('After entry: pending=%s current=%s', _pending_emotion, current_emotion)
+            if _pending_event.is_set():
+                _log().debug('Skip loop due to pending switch')
+                _play_once(player, files.exit)
+                next_emotion = _consume_pending()
+                if next_emotion and next_emotion != current_emotion:
+                    _set_current_emotion(next_emotion)
+                continue
             _play_loop_until_change(player, files.loop)
 
             if _stop_event.is_set():
