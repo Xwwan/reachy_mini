@@ -1,0 +1,5 @@
+maturin==1.13.3
+pytest==9.0.3
+pytest-asyncio==1.3.0
+-e E:\workspace\lab\reachy_mini
+reachy_mini_motor_controller @ file:///E:/workspace/lab/rmmc/target/wheels/reachy_mini_motor_controller-1.5.5-cp312-cp312-win_amd64.whl#sha256=26cc98c7cbe89f8aeccb5948207c2ce7b6053dd2ff711f97566ee6d210ebbf64

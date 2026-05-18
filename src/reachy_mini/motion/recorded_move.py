@@ -11,7 +11,7 @@ import numpy.typing as npt
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import LocalEntryNotFoundError
 
-from reachy_mini.motion.move import Move
+from reachy_mini.motion.move import Move, MoveTarget
 from reachy_mini.utils.interpolation import linear_pose_interpolation
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ DEFAULT_DATASETS = [
 
 
 def preload_dataset(dataset_name: str) -> str | None:
-    """Pre-download a HuggingFace dataset to local cache.
+    """Pre-download a HuggingFace dataset to local cache or accept a local path.
 
     This function downloads the dataset with network access, so it should be
     called during daemon startup (not during playback) to avoid blocking.
@@ -37,6 +37,10 @@ def preload_dataset(dataset_name: str) -> str | None:
 
     """
     try:
+        dataset_path = Path(dataset_name)
+        if dataset_path.exists():
+            return str(dataset_path.resolve())
+
         logger.info(f"Pre-downloading dataset: {dataset_name}")
         local_path: str = snapshot_download(dataset_name, repo_type="dataset")
         logger.info(f"Dataset {dataset_name} cached at: {local_path}")
@@ -97,18 +101,22 @@ class RecordedMove(Move):
 
     def evaluate(
         self, t: float
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]:
+    ) -> MoveTarget:
         """Evaluate the move at time t.
 
         Returns:
-            head: The head position (4x4 homogeneous matrix).
-            antennas: The antennas positions (rad).
-            body_yaw: The body yaw angle (rad).
+            A structured target with head pose, left arm, right arm, and body yaw.
 
         """
         # Under is Remi's emotions code, adapted
         if t >= self.timestamps[-1]:
-            raise Exception("Tried to evaluate recorded move beyond its duration.")
+            last_frame = self.trajectory[-1]
+            return MoveTarget(
+                head=np.array(last_frame["head"], dtype=np.float64),
+                left_arm=np.array(last_frame["left_arm"], dtype=np.float64),
+                right_arm=np.array(last_frame["right_arm"], dtype=np.float64),
+                body_yaw=float(last_frame.get("body_yaw", 0.0)),
+            )
 
         # Locate the right interval in the recorded time array.
         # 'index' is the insertion point which gives us the next timestamp.
@@ -128,8 +136,10 @@ class RecordedMove(Move):
 
         head_prev = np.array(self.trajectory[idx_prev]["head"], dtype=np.float64)
         head_next = np.array(self.trajectory[idx_next]["head"], dtype=np.float64)
-        antennas_prev: List[float] = self.trajectory[idx_prev]["antennas"]  # type: ignore[assignment]
-        antennas_next: List[float] = self.trajectory[idx_next]["antennas"]  # type: ignore[assignment]
+        left_arm_prev: List[float] = self.trajectory[idx_prev]["left_arm"]  # type: ignore[assignment]
+        left_arm_next: List[float] = self.trajectory[idx_next]["left_arm"]  # type: ignore[assignment]
+        right_arm_prev: List[float] = self.trajectory[idx_prev]["right_arm"]  # type: ignore[assignment]
+        right_arm_next: List[float] = self.trajectory[idx_next]["right_arm"]  # type: ignore[assignment]
         body_yaw_prev: float = self.trajectory[idx_prev].get("body_yaw", 0.0)  # type: ignore[assignment]
         body_yaw_next: float = self.trajectory[idx_next].get("body_yaw", 0.0)  # type: ignore[assignment]
         # check_collision = self.trajectory[idx_prev].get("check_collision", False)
@@ -137,10 +147,17 @@ class RecordedMove(Move):
         # Interpolate to infer a better position at the current time.
         # Joint interpolations are easy:
 
-        antennas_joints = np.array(
+        left_arm_joints = np.array(
             [
                 lerp(pos_prev, pos_next, alpha)
-                for pos_prev, pos_next in zip(antennas_prev, antennas_next)
+                for pos_prev, pos_next in zip(left_arm_prev, left_arm_next)
+            ],
+            dtype=np.float64,
+        )
+        right_arm_joints = np.array(
+            [
+                lerp(pos_prev, pos_next, alpha)
+                for pos_prev, pos_next in zip(right_arm_prev, right_arm_next)
             ],
             dtype=np.float64,
         )
@@ -150,7 +167,12 @@ class RecordedMove(Move):
         # Head position interpolation is more complex:
         head_pose = linear_pose_interpolation(head_prev, head_next, alpha)
 
-        return head_pose, antennas_joints, body_yaw
+        return MoveTarget(
+            head=head_pose,
+            left_arm=left_arm_joints,
+            right_arm=right_arm_joints,
+            body_yaw=body_yaw,
+        )
 
 
 class RecordedMoves:
@@ -164,23 +186,27 @@ class RecordedMoves:
     def __init__(self, hf_dataset_name: str):
         """Initialize RecordedMoves."""
         self.hf_dataset_name = hf_dataset_name
-        # Try local cache first (instant, no network)
-        try:
-            self.local_path = snapshot_download(
-                self.hf_dataset_name,
-                repo_type="dataset",
-                local_files_only=True,
-            )
-        except LocalEntryNotFoundError:
-            # Fallback: download from network (slow, but ensures it works)
-            logger.warning(
-                f"Dataset {hf_dataset_name} not in cache, downloading from HuggingFace. "
-                "This may take a moment. Consider pre-loading datasets at daemon startup."
-            )
-            self.local_path = snapshot_download(
-                self.hf_dataset_name,
-                repo_type="dataset",
-            )
+        dataset_path = Path(hf_dataset_name)
+        if dataset_path.exists():
+            self.local_path = str(dataset_path)
+        else:
+            # Try local cache first (instant, no network)
+            try:
+                self.local_path = snapshot_download(
+                    self.hf_dataset_name,
+                    repo_type="dataset",
+                    local_files_only=True,
+                )
+            except LocalEntryNotFoundError:
+                # Fallback: download from network (slow, but ensures it works)
+                logger.warning(
+                    f"Dataset {hf_dataset_name} not in cache, downloading from HuggingFace. "
+                    "This may take a moment. Consider pre-loading datasets at daemon startup."
+                )
+                self.local_path = snapshot_download(
+                    self.hf_dataset_name,
+                    repo_type="dataset",
+                )
         self.moves: Dict[str, Any] = {}
         self.sounds: Dict[str, Optional[Path]] = {}
 

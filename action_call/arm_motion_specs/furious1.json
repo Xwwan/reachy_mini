@@ -1,0 +1,144 @@
+{
+  "description": "愤怒 / furious: generated from preset 4 for furious1.",
+  "units": "deg",
+  "source_move": "furious1",
+  "emotion": "furious",
+  "emotion_label_zh": "愤怒",
+  "preset": {
+    "id": 4,
+    "main_left_deg": -60.0,
+    "main_right_deg": 60.0,
+    "swing_left_deg": 60.0,
+    "swing_right_deg": -60.0,
+    "repeats": 3
+  },
+  "timing": {
+    "source_duration": 5.725651264190674,
+    "raw_sequence_duration": 6.100000000000001,
+    "time_scale": 0.9386313547853562,
+    "interpolation": "linear"
+  },
+  "keyframes": [
+    {
+      "time": 0.0,
+      "left_arm": [
+        0.0,
+        0.0
+      ],
+      "right_arm": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "time": 1.1263576257424275,
+      "left_arm": [
+        0.0,
+        0.0
+      ],
+      "right_arm": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "time": 1.8772627095707124,
+      "left_arm": [
+        -60.0,
+        0.0
+      ],
+      "right_arm": [
+        60.0,
+        0.0
+      ]
+    },
+    {
+      "time": 2.299646819224123,
+      "left_arm": [
+        -60.0,
+        60.0
+      ],
+      "right_arm": [
+        60.0,
+        -60.0
+      ]
+    },
+    {
+      "time": 2.7220309288775333,
+      "left_arm": [
+        -60.0,
+        -60.0
+      ],
+      "right_arm": [
+        60.0,
+        60.0
+      ]
+    },
+    {
+      "time": 3.1444150385309437,
+      "left_arm": [
+        -60.0,
+        60.0
+      ],
+      "right_arm": [
+        60.0,
+        -60.0
+      ]
+    },
+    {
+      "time": 3.566799148184354,
+      "left_arm": [
+        -60.0,
+        -60.0
+      ],
+      "right_arm": [
+        60.0,
+        60.0
+      ]
+    },
+    {
+      "time": 3.9891832578377646,
+      "left_arm": [
+        -60.0,
+        60.0
+      ],
+      "right_arm": [
+        60.0,
+        -60.0
+      ]
+    },
+    {
+      "time": 4.411567367491175,
+      "left_arm": [
+        -60.0,
+        -60.0
+      ],
+      "right_arm": [
+        60.0,
+        60.0
+      ]
+    },
+    {
+      "time": 4.880883044883853,
+      "left_arm": [
+        -60.0,
+        0.0
+      ],
+      "right_arm": [
+        60.0,
+        0.0
+      ]
+    },
+    {
+      "time": 5.725651264190674,
+      "left_arm": [
+        0.0,
+        0.0
+      ],
+      "right_arm": [
+        0.0,
+        0.0
+      ]
+    }
+  ]
+}

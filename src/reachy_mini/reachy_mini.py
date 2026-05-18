@@ -1,6 +1,6 @@
 """Reachy Mini class for controlling a simulated or real Reachy Mini robot.
 
-This class provides methods to control the head and antennas of the Reachy Mini robot,
+This class provides methods to control the head and arms of the Reachy Mini robot,
 set their target positions, and perform various behaviors such as waking up and going to sleep.
 
 It also includes methods for multimedia interactions like playing sounds and looking at specific points in the image frame or world coordinates.
@@ -23,7 +23,7 @@ from reachy_mini.io.protocol import (
     AppendRecordCmd,
     DaemonStatus,
     GotoTaskRequest,
-    SetAntennasCmd,
+    SetArmsCmd,
     SetAutomaticBodyYawCmd,
     SetBodyYawCmd,
     SetFullTargetCmd,
@@ -43,6 +43,10 @@ from reachy_mini.utils.interpolation import InterpolationTechnique, minimum_jerk
 
 # Behavior definitions
 INIT_HEAD_POSE = np.eye(4)
+# Arm homing offsets are configured on the motors via hardware_config.yaml.
+# In SDK target space, the calibrated arm home is therefore 0 rad for each joint.
+INIT_ARM_JOINT_POSITIONS = np.zeros(2, dtype=np.float64)
+WAKE_UP_HOME_DURATION = 2.0
 
 SLEEP_HEAD_JOINT_POSITIONS = [
     0,
@@ -55,8 +59,6 @@ SLEEP_HEAD_JOINT_POSITIONS = [
 ]
 
 
-INIT_ANTENNAS_JOINT_POSITIONS = [-0.1745, 0.1745]  # ~10° offset to reduce shaking at vertical
-SLEEP_ANTENNAS_JOINT_POSITIONS = [-3.05, 3.05]
 SLEEP_HEAD_POSE = np.array(
     [
         [0.911, 0.004, 0.413, -0.021],
@@ -466,34 +468,38 @@ class ReachyMini:
     def set_target(
         self,
         head: Optional[npt.NDArray[np.float64]] = None,  # 4x4 pose matrix
-        antennas: Optional[
+        left_arm: Optional[
             Union[npt.NDArray[np.float64], List[float]]
-        ] = None,  # [right_angle, left_angle] (in rads)
+        ] = None,
+        right_arm: Optional[
+            Union[npt.NDArray[np.float64], List[float]]
+        ] = None,
         body_yaw: Optional[float] = None,  # Body yaw angle in radians
     ) -> None:
-        """Set the target pose of the head and/or the target position of the antennas.
+        """Set the target pose of the head and/or target positions of the arms.
 
         Args:
             head (Optional[np.ndarray]): 4x4 pose matrix representing the head pose.
-            antennas (Optional[Union[np.ndarray, List[float]]]): 1D array with two elements representing the angles of the antennas in radians.
+            left_arm: 1D array with two left arm joint angles in radians.
+            right_arm: 1D array with two right arm joint angles in radians.
             body_yaw (Optional[float]): Body yaw angle in radians.
 
         Raises:
-            ValueError: If neither head nor antennas are provided, or if the shape of head is not (4, 4), or if antennas is not a 1D array with two elements.
+            ValueError: If no target is provided, or if target shapes are invalid.
 
         """
-        if head is None and antennas is None and body_yaw is None:
+        if head is None and left_arm is None and right_arm is None and body_yaw is None:
             raise ValueError(
-                "At least one of head, antennas or body_yaw must be provided."
+                "At least one of head, left_arm, right_arm or body_yaw must be provided."
             )
 
         if head is not None and not head.shape == (4, 4):
             raise ValueError(f"Head pose must be a 4x4 matrix, got shape {head.shape}.")
 
-        if antennas is not None and not len(antennas) == 2:
-            raise ValueError(
-                "Antennas must be a list or 1D np array with two elements."
-            )
+        if left_arm is not None and not len(left_arm) == 2:
+            raise ValueError("left_arm must be a list or 1D np array with two elements.")
+        if right_arm is not None and not len(right_arm) == 2:
+            raise ValueError("right_arm must be a list or 1D np array with two elements.")
 
         if body_yaw is not None and not isinstance(body_yaw, (int, float)):
             raise ValueError("body_yaw must be a float.")
@@ -501,7 +507,8 @@ class ReachyMini:
         self.client.send_command(
             SetFullTargetCmd(
                 head=head.flatten().tolist() if head is not None else None,
-                antennas=list(antennas) if antennas is not None else None,
+                left_arm=list(left_arm) if left_arm is not None else None,
+                right_arm=list(right_arm) if right_arm is not None else None,
                 body_yaw=body_yaw,
             )
         )
@@ -514,8 +521,10 @@ class ReachyMini:
         }
         if head is not None:
             record["head"] = head.tolist()
-        if antennas is not None:
-            record["antennas"] = list(antennas)
+        if left_arm is not None:
+            record["left_arm"] = list(left_arm)
+        if right_arm is not None:
+            record["right_arm"] = list(right_arm)
         if body_yaw is not None:
             record["body_yaw"] = body_yaw
         self._set_record_data(record)
@@ -523,35 +532,43 @@ class ReachyMini:
     def goto_target(
         self,
         head: Optional[npt.NDArray[np.float64]] = None,  # 4x4 pose matrix
-        antennas: Optional[
+        left_arm: Optional[
             Union[npt.NDArray[np.float64], List[float]]
-        ] = None,  # [right_angle, left_angle] (in rads)
+        ] = None,
+        right_arm: Optional[
+            Union[npt.NDArray[np.float64], List[float]]
+        ] = None,
         duration: float = 0.5,  # Duration in seconds for the movement, default is 0.5 seconds.
         method: InterpolationTechnique = InterpolationTechnique.MIN_JERK,  # can be "linear", "minjerk", "ease_in_out" or "cartoon", default is "minjerk")
         body_yaw: float | None = 0.0,  # Body yaw angle in radians
     ) -> None:
-        """Go to a target head pose and/or antennas position using task space interpolation, in "duration" seconds.
+        """Go to a target head pose and/or arm position using task space interpolation.
 
         Args:
             head (Optional[np.ndarray]): 4x4 pose matrix representing the target head pose.
-            antennas (Optional[Union[np.ndarray, List[float]]]): 1D array with two elements representing the angles of the antennas in radians.
+            left_arm: 1D array with two left arm joint angles in radians.
+            right_arm: 1D array with two right arm joint angles in radians.
             duration (float): Duration of the movement in seconds.
             method (InterpolationTechnique): Interpolation method to use ("linear", "minjerk", "ease_in_out", "cartoon"). Default is "minjerk".
             body_yaw (float | None): Body yaw angle in radians. Use None to keep the current yaw.
 
         Raises:
-            ValueError: If neither head nor antennas are provided, or if duration is not positive.
+            ValueError: If no target is provided, or if duration is not positive.
 
         """
-        if head is None and antennas is None and body_yaw is None:
+        if head is None and left_arm is None and right_arm is None and body_yaw is None:
             raise ValueError(
-                "At least one of head, antennas or body_yaw must be provided."
+                "At least one of head, left_arm, right_arm or body_yaw must be provided."
             )
 
         if duration <= 0.0:
             raise ValueError(
                 "Duration must be positive and non-zero. Use set_target() for immediate position setting."
             )
+        if left_arm is not None and not len(left_arm) == 2:
+            raise ValueError("left_arm must be a list or 1D np array with two elements.")
+        if right_arm is not None and not len(right_arm) == 2:
+            raise ValueError("right_arm must be a list or 1D np array with two elements.")
 
         req = GotoTaskRequest(
             head=(
@@ -559,9 +576,14 @@ class ReachyMini:
                 if head is not None
                 else None
             ),
-            antennas=(
-                np.array(antennas, dtype=np.float64).flatten().tolist()
-                if antennas is not None
+            left_arm=(
+                np.array(left_arm, dtype=np.float64).flatten().tolist()
+                if left_arm is not None
+                else None
+            ),
+            right_arm=(
+                np.array(right_arm, dtype=np.float64).flatten().tolist()
+                if right_arm is not None
                 else None
             ),
             duration=duration,
@@ -573,8 +595,13 @@ class ReachyMini:
         self.client.wait_for_task_completion(task_uid, timeout=duration + 1.0)
 
     def wake_up(self) -> None:
-        """Wake up the robot - go to the initial head position and play the wake up emote and sound."""
-        self.goto_target(INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=2)
+        """Wake up the robot - go to the initial head/arm position and play the wake up emote and sound."""
+        self.goto_target(
+            INIT_HEAD_POSE,
+            left_arm=INIT_ARM_JOINT_POSITIONS,
+            right_arm=INIT_ARM_JOINT_POSITIONS,
+            duration=WAKE_UP_HOME_DURATION,
+        )
         time.sleep(0.1)
 
         # Toudoum
@@ -589,10 +616,10 @@ class ReachyMini:
         self.goto_target(INIT_HEAD_POSE, duration=0.2)
 
     def goto_sleep(self) -> None:
-        """Put the robot to sleep by moving the head and antennas to a predefined sleep position."""
+        """Put the robot to sleep by moving the head to a predefined sleep position."""
         # Check if we are too far from the initial position
         # Move to the initial position if necessary
-        current_positions, _ = self.get_current_joint_positions()
+        current_positions, _, _ = self.get_current_joint_positions()
         # init_positions = self.head_kinematics.ik(INIT_HEAD_POSE)
         # Todo : get init position from the daemon?
         init_positions = [
@@ -606,16 +633,14 @@ class ReachyMini:
         ]
         dist = np.linalg.norm(np.array(current_positions) - np.array(init_positions))
         if dist > 0.2:
-            self.goto_target(INIT_HEAD_POSE, antennas=INIT_ANTENNAS_JOINT_POSITIONS, duration=1)
+            self.goto_target(INIT_HEAD_POSE, duration=1)
             time.sleep(0.2)
 
         # Pfiou
         self.media.play_sound("go_sleep.wav")
 
         # # Move to the sleep position
-        self.goto_target(
-            SLEEP_HEAD_POSE, antennas=SLEEP_ANTENNAS_JOINT_POSITIONS, duration=2
-        )
+        self.goto_target(SLEEP_HEAD_POSE, duration=2)
 
         self._last_head_pose = SLEEP_HEAD_POSE
         time.sleep(2)
@@ -764,41 +789,32 @@ class ReachyMini:
         head_joint_positions: Optional[
             List[float]
         ] = None,  # [yaw, stewart_platform x 6] length 7
-        antennas_joint_positions: Optional[
-            List[float]
-        ] = None,  # [right_angle, left_angle] length 2
+        left_arm_joint_positions: Optional[List[float]] = None,
+        right_arm_joint_positions: Optional[List[float]] = None,
         duration: float = 0.5,  # Duration in seconds for the movement
     ) -> None:
-        """Go to a target head joint positions and/or antennas joint positions using joint space interpolation, in "duration" seconds.
-
-        [Internal] Go to a target head joint positions and/or antennas joint positions using joint space interpolation, in "duration" seconds.
-
-        Args:
-            head_joint_positions (Optional[List[float]]): List of head joint positions in radians (length 7).
-            antennas_joint_positions (Optional[List[float]]): List of antennas joint positions in radians (length 2).
-            duration (float): Duration of the movement in seconds. Default is 0.5 seconds.
-
-        Raises:
-            ValueError: If neither head_joint_positions nor antennas_joint_positions are provided, or if duration is not positive.
-
-        """
+        """Go to target head and/or arm joint positions using joint-space interpolation."""
         if duration <= 0.0:
             raise ValueError(
                 "Duration must be positive and non-zero. Use set_target() for immediate position setting."
             )
 
-        cur_head, cur_antennas = self.get_current_joint_positions()
-        current = cur_head + cur_antennas
+        cur_head, cur_left_arm, cur_right_arm = self.get_current_joint_positions()
+        current = cur_head + cur_left_arm + cur_right_arm
 
         target = []
         if head_joint_positions is not None:
             target.extend(head_joint_positions)
         else:
             target.extend(cur_head)
-        if antennas_joint_positions is not None:
-            target.extend(antennas_joint_positions)
+        if left_arm_joint_positions is not None:
+            target.extend(left_arm_joint_positions)
         else:
-            target.extend(cur_antennas)
+            target.extend(cur_left_arm)
+        if right_arm_joint_positions is not None:
+            target.extend(right_arm_joint_positions)
+        else:
+            target.extend(cur_right_arm)
 
         traj = minimum_jerk(np.array(current), np.array(target), duration)
 
@@ -808,34 +824,39 @@ class ReachyMini:
             angles = traj(t)
 
             head_joint = angles[:7]  # First 7 angles for the head
-            antennas_joint = angles[7:]
+            left_arm_joint = angles[7:9]
+            right_arm_joint = angles[9:11]
 
-            self._set_joint_positions(list(head_joint), list(antennas_joint))
+            self._set_joint_positions(
+                list(head_joint),
+                list(left_arm_joint),
+                list(right_arm_joint),
+            )
             time.sleep(0.01)
 
-    def get_current_joint_positions(self) -> tuple[list[float], list[float]]:
-        """Get the current joint positions of the head and antennas.
+    def get_current_joint_positions(
+        self,
+    ) -> tuple[list[float], list[float], list[float]]:
+        """Get the current joint positions of the head and arms.
 
-        Get the current joint positions of the head and antennas (in rad)
+        Get the current joint positions of the head and arms (in rad).
 
         Returns:
-            tuple: A tuple containing two lists:
+            tuple: A tuple containing three lists:
                 - List of head joint positions (rad) (length 7).
-                - List of antennas joint positions (rad) (length 2).
+                - List of left arm joint positions (rad) (length 2).
+                - List of right arm joint positions (rad) (length 2).
 
         """
         return self.client.get_current_joints()
 
-    def get_present_antenna_joint_positions(self) -> list[float]:
-        """Get the present joint positions of the antennas.
-
-        Get the present joint positions of the antennas (in rad)
-
-        Returns:
-            list: A list of antennas joint positions (rad) (length 2).
-
-        """
+    def get_present_left_arm_joint_positions(self) -> list[float]:
+        """Get the present joint positions of the left arm."""
         return self.get_current_joint_positions()[1]
+
+    def get_present_right_arm_joint_positions(self) -> list[float]:
+        """Get the present joint positions of the right arm."""
+        return self.get_current_joint_positions()[2]
 
     def get_current_head_pose(self) -> npt.NDArray[np.float64]:
         """Get the current head pose as a 4x4 matrix.
@@ -851,18 +872,10 @@ class ReachyMini:
     def _set_joint_positions(
         self,
         head_joint_positions: list[float] | None = None,
-        antennas_joint_positions: list[float] | None = None,
+        left_arm_joint_positions: list[float] | None = None,
+        right_arm_joint_positions: list[float] | None = None,
     ) -> None:
-        """Set the joint positions of the head and/or antennas.
-
-        [Internal] Set the joint positions of the head and/or antennas.
-
-        Args:
-            head_joint_positions (Optional[List[float]]): List of head joint positions in radians (length 7).
-            antennas_joint_positions (Optional[List[float]]): List of antennas joint positions in radians (length 2).
-            record (Optional[Dict]): If provided, the command will be logged with the given record data.
-
-        """
+        """Set the joint positions of the head and/or arms."""
         if head_joint_positions is not None:
             assert len(head_joint_positions) == 7, (
                 f"Head joint positions must have length 7, got {head_joint_positions}."
@@ -871,15 +884,29 @@ class ReachyMini:
                 SetHeadJointsCmd(joints=list(head_joint_positions))
             )
 
-        if antennas_joint_positions is not None:
-            assert len(antennas_joint_positions) == 2, "Antennas must have length 2."
+        if left_arm_joint_positions is not None:
+            assert len(left_arm_joint_positions) == 2, "left_arm must have length 2."
+        if right_arm_joint_positions is not None:
+            assert len(right_arm_joint_positions) == 2, "right_arm must have length 2."
+        if left_arm_joint_positions is not None or right_arm_joint_positions is not None:
             self.client.send_command(
-                SetAntennasCmd(antennas=list(antennas_joint_positions))
+                SetArmsCmd(
+                    left_arm=list(left_arm_joint_positions)
+                    if left_arm_joint_positions is not None
+                    else None,
+                    right_arm=list(right_arm_joint_positions)
+                    if right_arm_joint_positions is not None
+                    else None,
+                )
             )
 
-        if head_joint_positions is None and antennas_joint_positions is None:
+        if (
+            head_joint_positions is None
+            and left_arm_joint_positions is None
+            and right_arm_joint_positions is None
+        ):
             raise ValueError(
-                "At least one of head_joint_positions or antennas must be provided."
+                "At least one of head_joint_positions, left_arm, or right_arm must be provided."
             )
 
     def set_target_head_pose(self, pose: npt.NDArray[np.float64]) -> None:
@@ -902,9 +929,23 @@ class ReachyMini:
         else:
             raise ValueError("Pose must be provided as a 4x4 matrix.")
 
-    def set_target_antenna_joint_positions(self, antennas: List[float]) -> None:
-        """Set the target joint positions of the antennas."""
-        self.client.send_command(SetAntennasCmd(antennas=antennas))
+    def set_target_left_arm_joint_positions(self, left_arm: List[float]) -> None:
+        """Set the target joint positions of the left arm."""
+        self.client.send_command(SetArmsCmd(left_arm=left_arm))
+
+    def set_target_right_arm_joint_positions(self, right_arm: List[float]) -> None:
+        """Set the target joint positions of the right arm."""
+        self.client.send_command(SetArmsCmd(right_arm=right_arm))
+
+    def set_target_arm_joint_positions(
+        self,
+        left_arm: List[float] | None = None,
+        right_arm: List[float] | None = None,
+    ) -> None:
+        """Set target joint positions of the left and/or right arm."""
+        if left_arm is None and right_arm is None:
+            raise ValueError("At least one of left_arm or right_arm must be provided.")
+        self.client.send_command(SetArmsCmd(left_arm=left_arm, right_arm=right_arm))
 
     def set_target_body_yaw(self, body_yaw: float) -> None:
         """Set the target body yaw.
@@ -953,7 +994,8 @@ class ReachyMini:
         Args:
             ids (List[str] | None): List of motor names to enable. If None, all motors will be enabled.
                 Valid names match `src/reachy_mini/assets/config/hardware_config.yaml`:
-                `body_rotation`, `stewart_1` … `stewart_6`, `right_antenna`, `left_antenna`.
+                `body_rotation`, `stewart_1` through `stewart_6`, `left_arm_1`,
+                `left_arm_2`, `right_arm_1`, `right_arm_2`.
 
         """
         self._set_torque(True, ids=ids)
@@ -964,7 +1006,8 @@ class ReachyMini:
         Args:
             ids (List[str] | None): List of motor names to disable. If None, all motors will be disabled.
                 Valid names match `src/reachy_mini/assets/config/hardware_config.yaml`:
-                `body_rotation`, `stewart_1` … `stewart_6`, `right_antenna`, `left_antenna`.
+                `body_rotation`, `stewart_1` through `stewart_6`, `left_arm_1`,
+                `left_arm_2`, `right_arm_1`, `right_arm_2`.
 
         """
         self._set_torque(False, ids=ids)
@@ -1018,14 +1061,13 @@ class ReachyMini:
         self._move_cancelled = False
 
         if initial_goto_duration > 0.0:
-            start_head_pose, start_antennas_positions, start_body_yaw = move.evaluate(
-                0.0
-            )
+            start_target = move.evaluate(0.0)
             self.goto_target(
-                head=start_head_pose,
-                antennas=start_antennas_positions,
+                head=start_target.head,
+                left_arm=start_target.left_arm,
+                right_arm=start_target.right_arm,
                 duration=initial_goto_duration,
-                body_yaw=start_body_yaw,
+                body_yaw=start_target.body_yaw,
             )
 
         sleep_period = 1.0 / play_frequency
@@ -1041,18 +1083,41 @@ class ReachyMini:
 
             t = min(time.time() - t0, move.duration - 1e-2)
 
-            head, antennas, body_yaw = move.evaluate(t)
-            if head is not None:
-                self.set_target_head_pose(head)
-            if body_yaw is not None:
-                self.set_target_body_yaw(body_yaw)
-            if antennas is not None:
-                self.set_target_antenna_joint_positions(list(antennas))
+            target = move.evaluate(t)
+            if target.head is not None:
+                self.set_target_head_pose(target.head)
+            if target.body_yaw is not None:
+                self.set_target_body_yaw(target.body_yaw)
+            if target.left_arm is not None or target.right_arm is not None:
+                self.set_target_arm_joint_positions(
+                    left_arm=target.left_arm.tolist()
+                    if target.left_arm is not None
+                    else None,
+                    right_arm=target.right_arm.tolist()
+                    if target.right_arm is not None
+                    else None,
+                )
 
             elapsed = time.time() - t0 - t
             if elapsed < sleep_period:
                 await asyncio.sleep(sleep_period - elapsed)
             else:
                 await asyncio.sleep(0.001)
+
+        if not self._move_cancelled:
+            final_target = move.evaluate(move.duration)
+            if final_target.head is not None:
+                self.set_target_head_pose(final_target.head)
+            if final_target.body_yaw is not None:
+                self.set_target_body_yaw(final_target.body_yaw)
+            if final_target.left_arm is not None or final_target.right_arm is not None:
+                self.set_target_arm_joint_positions(
+                    left_arm=final_target.left_arm.tolist()
+                    if final_target.left_arm is not None
+                    else None,
+                    right_arm=final_target.right_arm.tolist()
+                    if final_target.right_arm is not None
+                    else None,
+                )
 
     play_move = async_to_sync(async_play_move)

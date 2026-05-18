@@ -31,7 +31,8 @@ def main():
 
             mini.set_target(
                 head=head,
-                antennas=np.array([target, -target]),
+                left_arm=np.array([target, 0.0]),
+                right_arm=np.array([-target, 0.0]),
                 body_yaw=target,
             )
             time.sleep(0.01)

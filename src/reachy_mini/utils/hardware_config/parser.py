@@ -11,6 +11,7 @@ class MotorConfig:
 
     id: int
     offset: int
+    software_zero_offset_rad: float
     angle_limit_min: int
     angle_limit_max: int
     return_delay_time: int
@@ -48,6 +49,9 @@ def parse_yaml_config(filename: str) -> ReachyMiniConfig:
             motor_ids[name] = MotorConfig(
                 id=params["id"],
                 offset=params["offset"],
+                software_zero_offset_rad=float(
+                    params.get("software_zero_offset_rad", 0.0)
+                ),
                 angle_limit_min=params["lower_limit"],
                 angle_limit_max=params["upper_limit"],
                 return_delay_time=params["return_delay_time"],

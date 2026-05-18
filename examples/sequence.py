@@ -6,7 +6,7 @@ Each step showcases a different degree of freedom or combination:
   2. Pitch oscillation (up-down)
   3. Roll oscillation (tilt)
   4. Vertical translation (Z bounce)
-  5. Antenna wave (alternating left/right)
+  5. Arm wave (alternating left/right)
   6. Circular XY translation
   7. Static pose sequence (position + yaw snaps)
 
@@ -26,7 +26,12 @@ from reachy_mini import ReachyMini
 def main() -> None:
     """Run the motion sequence in a loop."""
     with ReachyMini(media_backend="no_media") as reachy_mini:
-        reachy_mini.goto_target(np.eye(4), antennas=[0.0, 0.0], duration=1.0)
+        reachy_mini.goto_target(
+            np.eye(4),
+            left_arm=[0.0, 0.0],
+            right_arm=[0.0, 0.0],
+            duration=1.0,
+        )
         try:
             while True:
                 pose = np.eye(4)
@@ -41,7 +46,7 @@ def main() -> None:
                     euler_rot = np.array([0, 0.0, 0.7 * np.sin(2 * np.pi * 0.5 * t)])
                     rot_mat = R.from_euler("xyz", euler_rot, degrees=False).as_matrix()
                     pose[:3, :3] = rot_mat
-                    reachy_mini.set_target(head=pose, antennas=[0, 0])
+                    reachy_mini.set_target(head=pose, left_arm=[0, 0], right_arm=[0, 0])
                     time.sleep(0.01)
 
                 # --- Step 2: Pitch oscillation (0.3 rad amplitude, 0.5 Hz) ---
@@ -51,7 +56,7 @@ def main() -> None:
                     euler_rot = np.array([0, 0.3 * np.sin(2 * np.pi * 0.5 * t), 0])
                     rot_mat = R.from_euler("xyz", euler_rot, degrees=False).as_matrix()
                     pose[:3, :3] = rot_mat
-                    reachy_mini.set_target(head=pose, antennas=[0, 0])
+                    reachy_mini.set_target(head=pose, left_arm=[0, 0], right_arm=[0, 0])
                     time.sleep(0.01)
 
                 # --- Step 3: Roll oscillation (0.3 rad amplitude, 0.5 Hz) ---
@@ -61,7 +66,7 @@ def main() -> None:
                     euler_rot = np.array([0.3 * np.sin(2 * np.pi * 0.5 * t), 0, 0])
                     rot_mat = R.from_euler("xyz", euler_rot, degrees=False).as_matrix()
                     pose[:3, :3] = rot_mat
-                    reachy_mini.set_target(head=pose, antennas=[0, 0])
+                    reachy_mini.set_target(head=pose, left_arm=[0, 0], right_arm=[0, 0])
                     time.sleep(0.01)
 
                 # --- Step 4: Vertical bounce (25 mm amplitude, 0.5 Hz) ---
@@ -70,18 +75,22 @@ def main() -> None:
                     t = time.time() - t0
                     pose = np.eye(4)
                     pose[:3, 3][2] += 0.025 * np.sin(2 * np.pi * 0.5 * t)
-                    reachy_mini.set_target(head=pose, antennas=[0, 0])
+                    reachy_mini.set_target(head=pose, left_arm=[0, 0], right_arm=[0, 0])
                     time.sleep(0.01)
 
-                # --- Step 5: Antenna wave (alternating, 0.5 rad amplitude) ---
+                # --- Step 5: Arm wave (alternating, 0.5 rad amplitude) ---
                 s = time.time()
                 while time.time() - s < 2.0:
                     t = time.time() - t0
-                    antennas = [
+                    arm_wave = [
                         0.5 * np.sin(2 * np.pi * 0.5 * t),
                         -0.5 * np.sin(2 * np.pi * 0.5 * t),
                     ]
-                    reachy_mini.set_target(head=pose, antennas=antennas)
+                    reachy_mini.set_target(
+                        head=pose,
+                        left_arm=[arm_wave[0], 0.0],
+                        right_arm=[arm_wave[1], 0.0],
+                    )
                     time.sleep(0.01)
 
                 # --- Step 6: Circular XY translation (15 mm radius, 1 Hz) ---
@@ -93,35 +102,35 @@ def main() -> None:
                         0.015 * np.sin(2 * np.pi * 1.0 * t + np.pi / 2),
                         0.0,
                     ]
-                    reachy_mini.set_target(head=pose, antennas=[0, 0])
+                    reachy_mini.set_target(head=pose, left_arm=[0, 0], right_arm=[0, 0])
                     time.sleep(0.01)
 
                 # --- Step 7: Static pose sequence (position + yaw snaps) ---
                 pose[:3, 3] = [0, 0, 0.0]
-                reachy_mini.set_target(head=pose, antennas=[0, 0])
+                reachy_mini.set_target(head=pose, left_arm=[0, 0], right_arm=[0, 0])
 
                 time.sleep(0.5)
 
                 pose[:3, 3] = [0.02, 0.02, 0.0]
-                reachy_mini.set_target(head=pose, antennas=[0, 0])
+                reachy_mini.set_target(head=pose, left_arm=[0, 0], right_arm=[0, 0])
                 time.sleep(0.5)
 
                 pose[:3, 3] = [0.00, 0.02, 0.0]
                 euler_rot = np.array([0, 0, 0.5])
                 rot_mat = R.from_euler("xyz", euler_rot, degrees=False).as_matrix()
                 pose[:3, :3] = rot_mat
-                reachy_mini.set_target(head=pose, antennas=[0, 0])
+                reachy_mini.set_target(head=pose, left_arm=[0, 0], right_arm=[0, 0])
                 time.sleep(0.5)
 
                 pose[:3, 3] = [0.00, -0.02, 0.0]
                 euler_rot = np.array([0, 0, -0.5])
                 rot_mat = R.from_euler("xyz", euler_rot, degrees=False).as_matrix()
                 pose[:3, :3] = rot_mat
-                reachy_mini.set_target(head=pose, antennas=[0, 0])
+                reachy_mini.set_target(head=pose, left_arm=[0, 0], right_arm=[0, 0])
                 time.sleep(0.5)
 
                 pose[:3, 3] = [0, 0, 0.0]
-                reachy_mini.set_target(head=pose, antennas=[0, 0])
+                reachy_mini.set_target(head=pose, left_arm=[0, 0], right_arm=[0, 0])
                 time.sleep(2)
 
         except KeyboardInterrupt:

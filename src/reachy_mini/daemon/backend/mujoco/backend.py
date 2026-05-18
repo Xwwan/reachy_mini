@@ -68,16 +68,12 @@ class MujocoBackend(Backend):
 
         self.headless = headless
 
-        from reachy_mini.reachy_mini import (
-            SLEEP_ANTENNAS_JOINT_POSITIONS,
-            SLEEP_HEAD_JOINT_POSITIONS,
-        )
+        from reachy_mini.reachy_mini import SLEEP_HEAD_JOINT_POSITIONS
 
-        # Real robot convention for the order of the antennas joints is [right, left], but in mujoco it's [left, right]
-        self._SLEEP_ANTENNAS_JOINT_POSITIONS = [
-            SLEEP_ANTENNAS_JOINT_POSITIONS[1],
-            SLEEP_ANTENNAS_JOINT_POSITIONS[0],
-        ]
+        # The current MJCF still has two legacy visual joints. In this
+        # dual-arm fork they are only used as a lightweight visual proxy for the
+        # first DOF of each arm; the second DOF is tracked in backend state.
+        self._SLEEP_ARM_VISUAL_JOINT_POSITIONS = [0.0, 0.0]
         self._SLEEP_HEAD_JOINT_POSITIONS = SLEEP_HEAD_JOINT_POSITIONS
 
         mjcf_root_path = str(
@@ -99,6 +95,8 @@ class MujocoBackend(Backend):
         )
 
         self.current_head_pose = np.eye(4)
+        self.current_left_arm_joint_positions = np.zeros(2, dtype=np.float64)
+        self.current_right_arm_joint_positions = np.zeros(2, dtype=np.float64)
 
         self.joint_names = get_actuator_names(self.model)
 
@@ -186,10 +184,10 @@ class MujocoBackend(Backend):
                 # self.streamer_udp.send_frame(im)
 
         self.data.qpos[self.joint_qpos_addr] = np.array(
-            self._SLEEP_HEAD_JOINT_POSITIONS + self._SLEEP_ANTENNAS_JOINT_POSITIONS
+            self._SLEEP_HEAD_JOINT_POSITIONS + self._SLEEP_ARM_VISUAL_JOINT_POSITIONS
         ).reshape(-1, 1)
         self.data.ctrl[:] = np.array(
-            self._SLEEP_HEAD_JOINT_POSITIONS + self._SLEEP_ANTENNAS_JOINT_POSITIONS
+            self._SLEEP_HEAD_JOINT_POSITIONS + self._SLEEP_ARM_VISUAL_JOINT_POSITIONS
         )
 
         # recompute all kinematics, collisions, etc.
@@ -232,13 +230,17 @@ class MujocoBackend(Backend):
                 self.current_head_joint_positions = (
                     self.get_present_head_joint_positions()
                 )
-                self.current_antenna_joint_positions = (
-                    self.get_present_antenna_joint_positions()
+                self.current_left_arm_joint_positions = (
+                    self.get_present_left_arm_joint_positions()
+                )
+                self.current_right_arm_joint_positions = (
+                    self.get_present_right_arm_joint_positions()
                 )
                 # Update the Placo kinematics model to recompute passive joints
                 self.update_head_kinematics_model(
                     self.current_head_joint_positions,
-                    self.current_antenna_joint_positions,
+                    self.current_left_arm_joint_positions,
+                    self.current_right_arm_joint_positions,
                 )
                 self.current_head_pose = self.get_mj_present_head_pose()
 
@@ -256,8 +258,10 @@ class MujocoBackend(Backend):
 
                 if self.target_head_joint_positions is not None:
                     self.data.ctrl[:7] = self.target_head_joint_positions
-                if self.target_antenna_joint_positions is not None:
-                    self.data.ctrl[-2:] = -self.target_antenna_joint_positions
+                if self.target_left_arm_joint_positions is not None:
+                    self.data.ctrl[-2] = -self.target_left_arm_joint_positions[0]
+                if self.target_right_arm_joint_positions is not None:
+                    self.data.ctrl[-1] = -self.target_right_arm_joint_positions[0]
 
                 if (
                     self.joint_positions_publisher is not None
@@ -267,7 +271,8 @@ class MujocoBackend(Backend):
                         self.joint_positions_publisher.put(
                             JointPositionsMsg(
                                 head_joint_positions=self.current_head_joint_positions.tolist(),
-                                antennas_joint_positions=self.current_antenna_joint_positions.tolist(),
+                                left_arm_joint_positions=self.current_left_arm_joint_positions.tolist(),
+                                right_arm_joint_positions=self.current_right_arm_joint_positions.tolist(),
                             )
                         )
                         self.pose_publisher.put(
@@ -325,14 +330,29 @@ class MujocoBackend(Backend):
         ].flatten()
         return pos
 
-    def get_present_antenna_joint_positions(
+    def get_present_left_arm_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (2,)]:
-        """Get the current joint positions of the antennas."""
-        pos: npt.NDArray[np.float64] = self.data.qpos[
-            self.joint_qpos_addr[-2:]
-        ].flatten()
-        return -pos
+        """Get the current joint positions of the left arm."""
+        visual_pos = float(-self.data.qpos[self.joint_qpos_addr[-2]])
+        second_dof = (
+            float(self.target_left_arm_joint_positions[1])
+            if self.target_left_arm_joint_positions is not None
+            else 0.0
+        )
+        return np.array([visual_pos, second_dof], dtype=np.float64)
+
+    def get_present_right_arm_joint_positions(
+        self,
+    ) -> Annotated[npt.NDArray[np.float64], (2,)]:
+        """Get the current joint positions of the right arm."""
+        visual_pos = float(-self.data.qpos[self.joint_qpos_addr[-1]])
+        second_dof = (
+            float(self.target_right_arm_joint_positions[1])
+            if self.target_right_arm_joint_positions is not None
+            else 0.0
+        )
+        return np.array([visual_pos, second_dof], dtype=np.float64)
 
     def get_motor_control_mode(self) -> MotorControlMode:
         """Get the motor control mode."""

@@ -114,10 +114,11 @@ def as_any_pose(pose: NDArray[np.float64], use_matrix: bool) -> AnyPose:
 
 
 class FullBodyTarget(BaseModel):
-    """Represent the full body including the head pose and the joints for antennas."""
+    """Represent the full body including the head pose and arm joints."""
 
     target_head_pose: AnyPose | None = None
-    target_antennas: tuple[float, float] | None = None
+    target_left_arm: tuple[float, float] | None = None
+    target_right_arm: tuple[float, float] | None = None
     target_body_yaw: float | None = None
     timestamp: datetime | None = None
 
@@ -133,7 +134,8 @@ class FullBodyTarget(BaseModel):
                         "pitch": 0.0,
                         "yaw": 0.0,
                     },
-                    "target_antennas": [0.0, 0.0],
+                    "target_left_arm": [0.0, 0.0],
+                    "target_right_arm": [0.0, 0.0],
                     "target_body_yaw": 0.0,
                 }
             ]
@@ -155,7 +157,10 @@ class FullState(BaseModel):
     head_pose: AnyPose | None = None
     head_joints: list[float] | None = None
     body_yaw: float | None = None
-    antennas_position: list[float] | None = None
+    left_arm_position: list[float] | None = None
+    right_arm_position: list[float] | None = None
+    target_left_arm_position: list[float] | None = None
+    target_right_arm_position: list[float] | None = None
     timestamp: datetime | None = None
     passive_joints: list[float] | None = None
     doa: DoAInfo | None = None

@@ -305,7 +305,11 @@ def run_one_move(
 
         # Send target and read back current
         target_pose = utils.create_head_pose(*final_pos, *final_eul, degrees=False)
-        mini.set_target(target_pose, antennas=final_ant)
+        mini.set_target(
+            target_pose,
+            left_arm=[final_ant[1], 0.0],
+            right_arm=[final_ant[0], 0.0],
+        )
         current_pose = np.asarray(mini.get_current_head_pose(), dtype=float)
 
         # Warning on unchanged target

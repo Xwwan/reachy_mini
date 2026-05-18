@@ -24,13 +24,14 @@
  *
  *   // 5. Send commands — degree-friendly helpers, all built on setTarget()
  *   robot.setHeadRpyDeg(0, 10, -5);   // roll, pitch, yaw in degrees
- *   robot.setAntennasDeg(30, -30);    // right, left in degrees
+ *   robot.setArmsDeg(30, 0, -30, 0);  // left1, left2, right1, right2 in degrees
  *   robot.setBodyYawDeg(15);          // body yaw in degrees
  *
  *   // …or compose an atomic update in raw wire units (full SE(3); no XYZ loss):
  *   robot.setTarget({
  *       head: rpyToMatrix(0, 10, -5).flat(),  // number[16] flat row-major 4×4
- *       antennas: [degToRad(30), degToRad(-30)],
+ *       left_arm: [degToRad(30), 0],
+ *       right_arm: [degToRad(-30), 0],
  *       body_yaw: degToRad(15),
  *   });
  *   robot.playSound("wake_up.wav");   // filename on robot
@@ -41,9 +42,9 @@
  *   //    State payload is the daemon's raw wire shape — use the math
  *   //    utilities exported from this module for degree conversions.
  *   robot.addEventListener("state", (e) => {
- *       const { head, antennas, body_yaw, motor_mode, is_move_running } = e.detail;
+ *       const { head, left_arm, right_arm, body_yaw, motor_mode, is_move_running } = e.detail;
  *       // head:            number[16]   — flat row-major 4×4 (full SE(3))
- *       // antennas:        [rightRad, leftRad]
+ *       // left_arm/right_arm: [joint1Rad, joint2Rad]
  *       // body_yaw:        number       — radians
  *       // motor_mode:      "enabled" | "disabled" | "gravity_compensation"
  *       // is_move_running: boolean
@@ -85,7 +86,8 @@
  *   .state            "disconnected" | "connected" | "streaming"
  *   .robots           Array<{ id: string, meta: { name: string } }>
  *   .robotState       Mirror of the latest "state" event detail —
- *                     { head: number[16], antennas: [rightRad, leftRad],
+ *                     { head: number[16], left_arm: [joint1Rad, joint2Rad],
+ *                       right_arm: [joint1Rad, joint2Rad],
  *                       body_yaw, motor_mode, is_move_running }
  *                     (fields only present once the daemon sends them;
  *                      see EVENTS below)
@@ -110,7 +112,8 @@
  *   "streaming"       { sessionId: string, robotId: string }
  *   "sessionStopped"  { reason: string }
  *   "state"           { head: number[16],                    // flat row-major 4×4, when daemon sends head_pose
- *                       antennas: [rightRad, leftRad],       // when daemon sends antennas
+ *                       left_arm: [joint1Rad, joint2Rad],    // when daemon sends left_arm
+ *                       right_arm: [joint1Rad, joint2Rad],   // when daemon sends right_arm
  *                       body_yaw: number,                    // radians, when daemon sends body_yaw
  *                       motor_mode: string,                  // when daemon sends motor_mode
  *                       is_move_running: boolean }           // when daemon sends is_move_running
@@ -403,7 +406,8 @@ export class ReachyMini extends EventTarget {
      * math utilities (``matrixToRpy``, ``radToDeg``) for human units.
      * @returns {{
      *   head?: number[],
-     *   antennas?: number[],
+     *   left_arm?: number[],
+     *   right_arm?: number[],
      *   body_yaw?: number,
      *   motor_mode?: "enabled"|"disabled"|"gravity_compensation",
      *   is_move_running?: boolean,
@@ -862,12 +866,13 @@ export class ReachyMini extends EventTarget {
      * unchanged, so partial updates compose naturally.
      *
      * For human units (degrees), use the ``setHeadRpyDeg`` /
-     * ``setAntennasDeg`` / ``setBodyYawDeg`` thin wrappers below.
+     * ``setArmsDeg`` / ``setBodyYawDeg`` thin wrappers below.
      *
      * @param {object} [target]
      * @param {number[]} [target.head] 16-element flat row-major 4×4
      *   matrix (full SE(3); preserves translation, no XYZ loss).
-     * @param {number[]} [target.antennas] ``[rightRad, leftRad]``.
+     * @param {number[]} [target.left_arm] ``[joint1Rad, joint2Rad]``.
+     * @param {number[]} [target.right_arm] ``[joint1Rad, joint2Rad]``.
      * @param {number} [target.body_yaw] Body yaw in radians.
      * @returns {boolean} false if the data channel is not open.
      * @throws {TypeError} if any provided field has the wrong shape or
@@ -875,7 +880,7 @@ export class ReachyMini extends EventTarget {
      *   the JS boundary so caller mistakes surface with a stack trace
      *   pointing to the call site, not as a confusing daemon-side error.
      */
-    setTarget({ head, antennas, body_yaw } = {}) {
+    setTarget({ head, left_arm, right_arm, body_yaw } = {}) {
         const cmd = { type: "set_full_target" };
         if (head !== undefined) {
             if (!Array.isArray(head) || head.length !== 16
@@ -887,15 +892,25 @@ export class ReachyMini extends EventTarget {
             }
             cmd.head = head;
         }
-        if (antennas !== undefined) {
-            if (!Array.isArray(antennas) || antennas.length !== 2
-                || !antennas.every((n) => Number.isFinite(n))) {
+        if (left_arm !== undefined) {
+            if (!Array.isArray(left_arm) || left_arm.length !== 2
+                || !left_arm.every((n) => Number.isFinite(n))) {
                 throw new TypeError(
-                    'setTarget: antennas must be [rightRad, leftRad] (2 finite numbers); '
-                    + `got ${Array.isArray(antennas) ? `Array(${antennas.length})` : typeof antennas}`
+                    'setTarget: left_arm must be [joint1Rad, joint2Rad] (2 finite numbers); '
+                    + `got ${Array.isArray(left_arm) ? `Array(${left_arm.length})` : typeof left_arm}`
                 );
             }
-            cmd.antennas = antennas;
+            cmd.left_arm = left_arm;
+        }
+        if (right_arm !== undefined) {
+            if (!Array.isArray(right_arm) || right_arm.length !== 2
+                || !right_arm.every((n) => Number.isFinite(n))) {
+                throw new TypeError(
+                    'setTarget: right_arm must be [joint1Rad, joint2Rad] (2 finite numbers); '
+                    + `got ${Array.isArray(right_arm) ? `Array(${right_arm.length})` : typeof right_arm}`
+                );
+            }
+            cmd.right_arm = right_arm;
         }
         if (body_yaw !== undefined) {
             if (!Number.isFinite(body_yaw)) {
@@ -911,8 +926,8 @@ export class ReachyMini extends EventTarget {
     /**
      * Smooth daemon-side interpolation to a target pose over
      * ``duration`` seconds. Mirrors ``setTarget``'s wire shape (head
-     * is a 16-element flat row-major 4×4, antennas are
-     * ``[rightRad, leftRad]``, body_yaw is radians) and adds a
+     * is a 16-element flat row-major 4×4, arms are two-element
+     * joint arrays, body_yaw is radians) and adds a
      * required ``duration`` field. The daemon dispatches the command
      * to its lerp planner instead of jumping to the target.
      *
@@ -921,13 +936,13 @@ export class ReachyMini extends EventTarget {
      * before a streamed playback). For continuous streamed motion,
      * use ``setTarget`` and lerp client-side.
      *
-     * @param {{head?: number[], antennas?: number[], body_yaw?: number, duration: number}} args
+     * @param {{head?: number[], left_arm?: number[], right_arm?: number[], body_yaw?: number, duration: number}} args
      * @returns {boolean} false if the data channel is not open.
      * @throws {TypeError} if any provided field has the wrong shape
      *   or contains a non-finite value (NaN, Infinity), or if
      *   ``duration`` is missing or non-positive.
      */
-    gotoTarget({ head, antennas, body_yaw, duration } = {}) {
+    gotoTarget({ head, left_arm, right_arm, body_yaw, duration } = {}) {
         const cmd = { type: "goto_target" };
         if (head !== undefined) {
             if (!Array.isArray(head) || head.length !== 16
@@ -939,15 +954,25 @@ export class ReachyMini extends EventTarget {
             }
             cmd.head = head;
         }
-        if (antennas !== undefined) {
-            if (!Array.isArray(antennas) || antennas.length !== 2
-                || !antennas.every((n) => Number.isFinite(n))) {
+        if (left_arm !== undefined) {
+            if (!Array.isArray(left_arm) || left_arm.length !== 2
+                || !left_arm.every((n) => Number.isFinite(n))) {
                 throw new TypeError(
-                    'gotoTarget: antennas must be [rightRad, leftRad] (2 finite numbers); '
-                    + `got ${Array.isArray(antennas) ? `Array(${antennas.length})` : typeof antennas}`
+                    'gotoTarget: left_arm must be [joint1Rad, joint2Rad] (2 finite numbers); '
+                    + `got ${Array.isArray(left_arm) ? `Array(${left_arm.length})` : typeof left_arm}`
                 );
             }
-            cmd.antennas = antennas;
+            cmd.left_arm = left_arm;
+        }
+        if (right_arm !== undefined) {
+            if (!Array.isArray(right_arm) || right_arm.length !== 2
+                || !right_arm.every((n) => Number.isFinite(n))) {
+                throw new TypeError(
+                    'gotoTarget: right_arm must be [joint1Rad, joint2Rad] (2 finite numbers); '
+                    + `got ${Array.isArray(right_arm) ? `Array(${right_arm.length})` : typeof right_arm}`
+                );
+            }
+            cmd.right_arm = right_arm;
         }
         if (body_yaw !== undefined) {
             if (!Number.isFinite(body_yaw)) {
@@ -977,13 +1002,17 @@ export class ReachyMini extends EventTarget {
     }
 
     /**
-     * Set antenna positions from degrees.
+     * Set arm positions from degrees.
      * Convenience wrapper over ``setTarget``.
-     * @param {number} rightDeg @param {number} leftDeg
+     * @param {number} left1Deg @param {number} left2Deg
+     * @param {number} right1Deg @param {number} right2Deg
      * @returns {boolean}
      */
-    setAntennasDeg(rightDeg, leftDeg) {
-        return this.setTarget({ antennas: [degToRad(rightDeg), degToRad(leftDeg)] });
+    setArmsDeg(left1Deg, left2Deg, right1Deg, right2Deg) {
+        return this.setTarget({
+            left_arm: [degToRad(left1Deg), degToRad(left2Deg)],
+            right_arm: [degToRad(right1Deg), degToRad(right2Deg)],
+        });
     }
 
     /**
@@ -1022,7 +1051,7 @@ export class ReachyMini extends EventTarget {
     }
 
     /**
-     * Play the wake-up animation (full head/antennas trajectory on the
+     * Play the wake-up animation (head trajectory on the
      * robot, ~2 s). Fire-and-forget — poll ``requestState()`` and watch
      * ``is_move_running`` if you need to know when it finishes.
      *
@@ -1558,7 +1587,8 @@ export class ReachyMini extends EventTarget {
             // consumers can hand it straight to WebGL / Three.js / trajectory
             // logs. Everything else is forwarded as-is.
             if (s.head_pose) this._robotState.head = s.head_pose.flat();
-            if (s.antennas) this._robotState.antennas = [s.antennas[0], s.antennas[1]];
+            if (s.left_arm) this._robotState.left_arm = [s.left_arm[0], s.left_arm[1]];
+            if (s.right_arm) this._robotState.right_arm = [s.right_arm[0], s.right_arm[1]];
             if (typeof s.body_yaw === 'number') this._robotState.body_yaw = s.body_yaw;
             if (s.motor_mode) this._robotState.motor_mode = s.motor_mode;
             if (typeof s.is_move_running === 'boolean') this._robotState.is_move_running = s.is_move_running;

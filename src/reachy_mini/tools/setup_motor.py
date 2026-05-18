@@ -40,8 +40,10 @@ id2name = {
     14: "stewart_4",
     15: "stewart_5",
     16: "stewart_6",
-    17: "right_antenna",
-    18: "left_antenna",
+    17: "left_arm_1",
+    18: "left_arm_2",
+    19: "right_arm_1",
+    20: "right_arm_2",
 }
 
 # (TX + RX) * (1 start + 8 data + 1 stop)
@@ -453,6 +455,10 @@ if __name__ == "__main__":
             "stewart_4",
             "stewart_5",
             "stewart_6",
+            "left_arm_1",
+            "left_arm_2",
+            "right_arm_1",
+            "right_arm_2",
             "right_antenna",
             "left_antenna",
             "all",
