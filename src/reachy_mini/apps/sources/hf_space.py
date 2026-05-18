@@ -136,7 +136,7 @@ async def list_available_apps() -> list[AppInfo]:
                 response.raise_for_status()
                 text = await response.text()
                 authorized_ids = json.loads(text)
-        except (aiohttp.ClientError, json.JSONDecodeError):
+        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, json.JSONDecodeError):
             return []
 
         if not isinstance(authorized_ids, list):

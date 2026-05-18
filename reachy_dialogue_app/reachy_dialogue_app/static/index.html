@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Reachy Mini Voice Dialogue</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <main class="app-shell">
+        <header class="topbar">
+            <div>
+                <h1>Reachy Mini Voice</h1>
+                <p id="connection-status">未检查服务</p>
+            </div>
+            <button id="health-btn" type="button">检查</button>
+        </header>
+
+        <section class="settings-panel" aria-label="设置">
+            <label>
+                <span>对话服务地址</span>
+                <input id="service-url" type="url" inputmode="url" autocomplete="off">
+            </label>
+            <label>
+                <span>会话 ID</span>
+                <input id="conversation-id" type="text" autocomplete="off">
+            </label>
+            <label>
+                <span>回复动作</span>
+                <select id="gesture">
+                    <option value="shake_head">摇头</option>
+                    <option value="antenna_wave">天线摆动</option>
+                    <option value="none">不动作</option>
+                </select>
+            </label>
+            <label>
+                <span>TTS 采样率</span>
+                <input id="tts-sample-rate" type="number" min="8000" step="1000">
+            </label>
+        </section>
+
+        <section class="voice-panel" aria-label="语音聊天">
+            <button id="record-btn" class="record-button" type="button">开始录音</button>
+            <div id="recording-time">00:00</div>
+            <div class="meter" aria-label="机器人麦克风音量">
+                <div class="meter-header">
+                    <span>麦克风音量</span>
+                    <strong id="mic-level-text">RMS 0.00000</strong>
+                </div>
+                <div class="meter-track">
+                    <div id="mic-level-fill" class="meter-fill"></div>
+                </div>
+            </div>
+            <div class="live-caption" aria-live="polite">
+                <span>实时字幕（机器人麦克风）</span>
+                <p id="live-transcript">等待录音</p>
+            </div>
+        </section>
+
+        <section class="conversation" aria-label="对话记录">
+            <div class="message user">
+                <span>你说</span>
+                <p id="transcript">等待录音</p>
+            </div>
+            <div class="message robot">
+                <span>Reachy 回答</span>
+                <p id="reply">服务返回后会显示在这里</p>
+            </div>
+        </section>
+
+        <div id="status-line" role="status">准备就绪</div>
+    </main>
+
+    <script src="/static/main.js"></script>
+</body>
+
+</html>

@@ -79,9 +79,23 @@ class RobotBackend(Backend):
         )
 
         self.name2id = self.c.get_motor_name_id()
+        self._has_antennas = all(
+            name in self.name2id for name in ("right_antenna", "left_antenna")
+        )
+        self._has_arms = all(
+            name in self.name2id
+            for name in ("left_arm_1", "left_arm_2", "right_arm_1", "right_arm_2")
+        )
         if hardware_config_filepath is not None:
             config = parse_yaml_config(hardware_config_filepath)
             for motor_name, motor_conf in config.motors.items():
+                if motor_name not in self.name2id:
+                    self.logger.warning(
+                        "Skipping PID config for unknown motor '%s'. Controller exposes: %s",
+                        motor_name,
+                        sorted(self.name2id),
+                    )
+                    continue
                 if motor_conf.pid is not None:
                     motor_id = self.name2id[motor_name]
                     p, i, d = motor_conf.pid
@@ -207,9 +221,10 @@ class RobotBackend(Backend):
 
             if self._current_antennas_operation_mode != 0:  # if position control mode
                 if self.target_antenna_joint_positions is not None:
-                    self.c.set_antennas_positions(
-                        self.target_antenna_joint_positions.tolist()
-                    )
+                    if self._has_antennas:
+                        self.c.set_antennas_positions(
+                            self.target_antenna_joint_positions.tolist()
+                        )
             # Antenna torque control is not supported with feetech motors
             # else:
             #     if self.target_antenna_joint_current is not None:
@@ -420,15 +435,31 @@ class RobotBackend(Backend):
             if mode != 0:
                 # if the mode is not torque control, we need to set the head joint positions
                 # to the current positions to avoid sudden movements
-                self.target_antenna_joint_positions = np.array(
-                    self.c.get_last_position().antennas
-                )
-                self.c.set_antennas_positions(
-                    self.target_antenna_joint_positions.tolist()
-                )
-                self.c.enable_antennas(True)
+                motor_pos = self.c.get_last_position()
+                if self._has_antennas:
+                    self.target_antenna_joint_positions = np.array(
+                        motor_pos.antennas
+                    )
+                    self.c.set_antennas_positions(
+                        self.target_antenna_joint_positions.tolist()
+                    )
+                    self.c.enable_antennas(True)
+                elif self._has_arms:
+                    self.target_antenna_joint_positions = np.array(
+                        motor_pos.left_arm
+                    )
+                    self.c.set_left_arm_operating_mode(mode)
+                    self.c.set_right_arm_operating_mode(mode)
+                    self.c.set_left_arm_positions(list(motor_pos.left_arm))
+                    self.c.set_right_arm_positions(list(motor_pos.right_arm))
+                    self.c.enable_left_arm(True)
+                    self.c.enable_right_arm(True)
             else:
-                self.c.enable_antennas(False)
+                if self._has_antennas:
+                    self.c.enable_antennas(False)
+                elif self._has_arms:
+                    self.c.enable_left_arm(False)
+                    self.c.enable_right_arm(False)
 
             self._current_antennas_operation_mode = mode
 
@@ -444,7 +475,12 @@ class RobotBackend(Backend):
         positions = self.c.get_last_position()
 
         yaw = positions.body_yaw
-        antennas = positions.antennas
+        if self._has_antennas:
+            antennas = positions.antennas
+        elif self._has_arms:
+            antennas = positions.left_arm
+        else:
+            antennas = [0.0, 0.0]
         dofs = positions.stewart
 
         return [yaw] + list(dofs), list(antennas)
@@ -673,5 +709,4 @@ class RobotBackend(Backend):
 
         result: bytes = bytes(self.c.write_raw_packet(packet))
         return result
-
 
