@@ -17,7 +17,7 @@ downloads/
 eggs/
 .eggs/
 .run/
-.env_exports/
+env_exports/
 lib/
 lib64/
 parts/
