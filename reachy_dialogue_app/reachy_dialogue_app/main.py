@@ -12,7 +12,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import numpy as np
 import requests
@@ -27,6 +27,8 @@ from reachy_mini.utils import create_head_pose
 DEFAULT_SERVICE_URL = "http://127.0.0.1:12312"
 DEFAULT_CONVERSATION_ID = "reachy-mini-voice"
 DEFAULT_GESTURE = "shake_head"
+DEFAULT_EMOJI_SERVICE_URL = "http://127.0.0.1:8001"
+DEFAULT_EMOJI_CONFIG_FILE = Path(__file__).resolve().parent / "emoji_config.json"
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 DEFAULT_ROBOT_PORT = 8000
@@ -67,6 +69,17 @@ class AudioLevel:
 class LiveTranscript:
     text: str
     is_final: bool
+    error: str | None = None
+
+
+@dataclass
+class EmojiTriggerResult:
+    matched: bool
+    signal: str | None = None
+    emotion: str | None = None
+    url: str | None = None
+    ok: bool = False
+    status_code: int | None = None
     error: str | None = None
 
 
@@ -759,12 +772,22 @@ class ReachyDialogueApp(ReachyMiniApp):
         jobs: queue.Queue[RobotJob] = queue.Queue()
         recorder = RobotMicRecorder(reachy_mini)
         playback_tester = RobotMicPlaybackTester(reachy_mini)
-        _register_local_mic_routes(self.settings_app, settings, settings_lock)
+        emoji_config = _load_emoji_trigger_config()
+        _register_local_mic_routes(
+            self.settings_app,
+            settings,
+            settings_lock,
+            emoji_config=emoji_config,
+        )
 
         @self.settings_app.get("/api/settings")
         def get_settings() -> dict[str, Any]:
             with settings_lock:
                 return dict(settings)
+
+        @self.settings_app.get("/api/emoji-config")
+        def get_emoji_config() -> dict[str, Any]:
+            return _public_emoji_config(emoji_config)
 
         @self.settings_app.post("/api/settings")
         def update_settings(payload: SettingsPayload) -> dict[str, Any]:
@@ -823,6 +846,12 @@ class ReachyDialogueApp(ReachyMiniApp):
             )
             data = _json_or_error(response)
             if response.ok:
+                emoji_result = _trigger_emoji_from_text(
+                    str(data.get("reply") or ""),
+                    emoji_config,
+                )
+                if emoji_result.matched:
+                    data["emoji_trigger"] = _emoji_result_payload(emoji_result)
                 jobs.put(
                     RobotJob(
                         gesture=current["gesture"],
@@ -940,6 +969,15 @@ class ReachyDialogueApp(ReachyMiniApp):
                                 is_final=True,
                                 error=None,
                             )
+                            emoji_result = _trigger_emoji_from_text(
+                                str(data.get("reply") or ""),
+                                emoji_config,
+                            )
+                            if emoji_result.matched:
+                                yield _sse_frame(
+                                    "emoji",
+                                    _emoji_result_payload(emoji_result),
+                                )
                             audio_base64 = data.get("audio_base64")
                             if not audio_base64 and audio_chunks:
                                 audio_base64 = base64.b64encode(
@@ -1140,6 +1178,8 @@ def _register_local_mic_routes(
     app: FastAPI,
     settings: dict[str, Any],
     settings_lock: threading.Lock,
+    *,
+    emoji_config: dict[str, Any] | None = None,
 ) -> None:
     @app.post("/api/local-mic/start")
     def local_mic_start() -> dict[str, Any]:
@@ -1210,9 +1250,21 @@ def _register_local_mic_routes(
                     timeout=(10, 120),
                 )
                 for item in _iter_sse_events(response):
+                    event = str(item.get("event") or "message")
+                    data = item.get("data") or {}
+                    if event == "done":
+                        emoji_result = _trigger_emoji_from_text(
+                            str(data.get("reply") or ""),
+                            emoji_config,
+                        )
+                        if emoji_result.matched:
+                            yield _sse_frame(
+                                "emoji",
+                                _emoji_result_payload(emoji_result),
+                            )
                     yield _sse_frame(
-                        str(item.get("event") or "message"),
-                        item.get("data") or {},
+                        event,
+                        data,
                     )
             except HTTPException as exc:
                 yield _sse_frame("error", {"message": str(exc.detail)})
@@ -1239,6 +1291,7 @@ def _build_web_only_app() -> FastAPI:
     app = FastAPI()
     settings_lock = threading.Lock()
     settings = _default_settings()
+    emoji_config = _load_emoji_trigger_config()
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -1247,7 +1300,12 @@ def _build_web_only_app() -> FastAPI:
         return FileResponse(static_dir / "local-mic-test.html")
 
     _register_settings_routes(app, settings, settings_lock)
-    _register_local_mic_routes(app, settings, settings_lock)
+    _register_local_mic_routes(app, settings, settings_lock, emoji_config=emoji_config)
+
+    @app.get("/api/emoji-config")
+    def get_emoji_config() -> dict[str, Any]:
+        return _public_emoji_config(emoji_config)
+
     return app
 
 
@@ -1255,6 +1313,136 @@ def run_web_only(host: str, port: int) -> None:
     import uvicorn
 
     uvicorn.run(_build_web_only_app(), host=host, port=port)
+
+
+def _load_emoji_trigger_config() -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "enabled": True,
+        "service_url": DEFAULT_EMOJI_SERVICE_URL,
+        "request_timeout_seconds": 1.5,
+        "signal_map": {},
+        "available_emotions": [],
+    }
+    config_path = Path(
+        os.environ.get("REACHY_DIALOGUE_EMOJI_CONFIG", DEFAULT_EMOJI_CONFIG_FILE)
+    )
+    try:
+        with config_path.open("r", encoding="utf-8") as config_file:
+            loaded = json.load(config_file)
+        if isinstance(loaded, dict):
+            config.update(loaded)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        print(f"Failed to load emoji config {config_path}: {exc}")
+
+    service_url = (
+        os.environ.get("REACHY_DIALOGUE_EMOJI_SERVICE_URL")
+        or os.environ.get("REACHY_EMOJI_SERVICE_URL")
+        or str(config.get("service_url") or DEFAULT_EMOJI_SERVICE_URL)
+    )
+    config["service_url"] = service_url.rstrip("/")
+
+    enabled_override = os.environ.get("REACHY_DIALOGUE_EMOJI_ENABLED")
+    if enabled_override is not None:
+        config["enabled"] = enabled_override.lower() in {"1", "true", "yes", "on"}
+    else:
+        config["enabled"] = bool(config.get("enabled", True))
+
+    signal_map = config.get("signal_map")
+    if not isinstance(signal_map, dict):
+        signal_map = {}
+    config["signal_map"] = {
+        str(signal): str(emotion)
+        for signal, emotion in signal_map.items()
+        if str(signal)
+    }
+
+    available_emotions = config.get("available_emotions")
+    if not isinstance(available_emotions, list):
+        available_emotions = sorted(set(config["signal_map"].values()))
+    config["available_emotions"] = [str(emotion) for emotion in available_emotions]
+
+    try:
+        config["request_timeout_seconds"] = float(
+            config.get("request_timeout_seconds", 1.5)
+        )
+    except (TypeError, ValueError):
+        config["request_timeout_seconds"] = 1.5
+    return config
+
+
+def _public_emoji_config(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": bool(config.get("enabled")),
+        "service_url": config.get("service_url"),
+        "signal_map": dict(config.get("signal_map") or {}),
+        "available_emotions": list(config.get("available_emotions") or []),
+    }
+
+
+def _trigger_emoji_from_text(
+    text: str,
+    config: dict[str, Any] | None,
+) -> EmojiTriggerResult:
+    if not config or not config.get("enabled", True):
+        return EmojiTriggerResult(matched=False)
+
+    signal_map = config.get("signal_map")
+    if not isinstance(signal_map, dict):
+        return EmojiTriggerResult(matched=False)
+
+    signal = _find_emoji_signal(text, signal_map)
+    if signal is None:
+        return EmojiTriggerResult(matched=False)
+
+    emotion = str(signal_map.get(signal) or "")
+    service_url = str(config.get("service_url") or DEFAULT_EMOJI_SERVICE_URL).rstrip("/")
+    url = f"{service_url}/{quote(signal, safe='')}"
+    try:
+        response = requests.get(
+            url,
+            timeout=float(config.get("request_timeout_seconds") or 1.5),
+        )
+        return EmojiTriggerResult(
+            matched=True,
+            signal=signal,
+            emotion=emotion,
+            url=url,
+            ok=response.ok,
+            status_code=response.status_code,
+            error=None if response.ok else response.text[:300],
+        )
+    except requests.RequestException as exc:
+        return EmojiTriggerResult(
+            matched=True,
+            signal=signal,
+            emotion=emotion,
+            url=url,
+            ok=False,
+            error=str(exc),
+        )
+
+
+def _find_emoji_signal(text: str, signal_map: dict[str, str]) -> str | None:
+    if not text:
+        return None
+    for signal in sorted(signal_map, key=len, reverse=True):
+        if signal and signal in text:
+            return signal
+    return None
+
+
+def _emoji_result_payload(result: EmojiTriggerResult) -> dict[str, Any]:
+    return {
+        "matched": result.matched,
+        "signal": result.signal,
+        "emotion": result.emotion,
+        "url": result.url,
+        "ok": result.ok,
+        "status_code": result.status_code,
+        "error": result.error,
+    }
 
 
 def _normalize_service_url(value: str) -> str:

@@ -245,6 +245,14 @@ async function sendRecording() {
                 setStatus(`正在接收 TTS 音频 ${audioChunkCount}`);
                 return;
             }
+            if (event === "emoji") {
+                if (data.ok) {
+                    setStatus(`已触发表情 ${data.emotion || data.signal}`);
+                } else {
+                    setStatus(`表情触发失败：${data.error || data.status_code || "未知错误"}`);
+                }
+                return;
+            }
             if (event === "done") {
                 finalPayload = data;
                 transcript = data.transcript || transcript;

@@ -25,6 +25,7 @@ tags:
 - 如果服务端没有流式 finish 接口，app 会回退到 `/voice/live/finish` 的非流式 JSON 响应并继续播放返回的 TTS PCM。
 - 每轮回复默认触发摇头动作，页面里可改成天线摆动或不动作。
 - 页面里临时加入了“机器人麦克风回放测试”：录一段机器人麦克风输入，停止后不经过对话服务，直接从机器人扬声器播放原始录音，方便检查机器人麦克风和扬声器链路。
+- App 维护自己的 `reachy_dialogue_app/reachy_dialogue_app/emoji_config.json`，用于声明可用表情和 signal 映射；当模型回复里出现 `signal_map` 的 key（例如 `😀`、`angry`、`sad`）时，会请求 Reachy Emoji 服务的 URL 路径接口。
 
 ## 启动顺序
 
@@ -33,6 +34,20 @@ tags:
 ```bash
 cd /home/tzhx/test-project
 /home/tzhx/miniconda3/bin/conda run -n test python -m src.main --host 127.0.0.1 --port 12312 --log-level DEBUG
+```
+
+如果要联动终端表情，另开一个终端启动 Reachy Emoji 服务：
+
+```bash
+cd /home/tzhx/wyl/reachy_mini/reachy_emoji
+/home/tzhx/miniconda3/bin/conda run -n test python main.py
+```
+
+默认表情服务地址是 `http://127.0.0.1:8001`。例如模型回复中包含 `angry` 时，
+dialogue app 会发出：
+
+```text
+GET http://127.0.0.1:8001/angry
 ```
 
 然后启动 Reachy Mini app：
@@ -109,4 +124,7 @@ export REACHY_USE_SIM=false
 export REACHY_DIALOGUE_WEB_ONLY=false
 export REACHY_DIALOGUE_WEB_HOST=127.0.0.1
 export REACHY_DIALOGUE_WEB_PORT=8042
+export REACHY_DIALOGUE_EMOJI_ENABLED=true
+export REACHY_DIALOGUE_EMOJI_SERVICE_URL=http://127.0.0.1:8001
+export REACHY_DIALOGUE_EMOJI_CONFIG=/path/to/emoji_config.json
 ```

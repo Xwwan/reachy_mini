@@ -188,6 +188,14 @@ async function stopAndReply() {
             setStatus(`正在播放 TTS 音频 ${audioChunks}`);
             return;
         }
+        if (event.event === "emoji") {
+            if (event.data.ok) {
+                setStatus(`已触发表情 ${event.data.emotion || event.data.signal}`);
+            } else {
+                setStatus(`表情触发失败：${event.data.error || event.data.status_code || "未知错误"}`);
+            }
+            return;
+        }
         if (event.event === "done") {
             transcript = event.data.transcript || transcript;
             reply = event.data.reply || reply;
