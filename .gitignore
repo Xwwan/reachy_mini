@@ -16,6 +16,8 @@ dist/
 downloads/
 eggs/
 .eggs/
+.run/
+env_exports/
 lib/
 lib64/
 parts/

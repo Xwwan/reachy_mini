@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
-import numpy as np
 import psutil
 from pydantic import BaseModel
 
@@ -303,15 +302,11 @@ class AppManager:
                 self.daemon.backend.enable_motors()
 
             try:
-                from reachy_mini.reachy_mini import (
-                    INIT_ANTENNAS_JOINT_POSITIONS,
-                    INIT_HEAD_POSE,
-                )
+                from reachy_mini.reachy_mini import INIT_HEAD_POSE
 
                 self.logger.getChild("runner").info("Returning robot to zero position")
                 await self.daemon.backend.goto_target(
                     head=INIT_HEAD_POSE,
-                    antennas=np.array(INIT_ANTENNAS_JOINT_POSITIONS),
                     duration=1.0,
                 )
             except Exception as e:

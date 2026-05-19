@@ -35,7 +35,8 @@ class GotoModelRequest(BaseModel):
     """Request model for the goto endpoint."""
 
     head_pose: AnyPose | None = None
-    antennas: tuple[float, float] | None = None
+    left_arm: tuple[float, float] | None = None
+    right_arm: tuple[float, float] | None = None
     body_yaw: float | None = None
     duration: float
     interpolation: InterpolationTechnique = InterpolationTechnique.MIN_JERK
@@ -52,13 +53,15 @@ class GotoModelRequest(BaseModel):
                         "pitch": 0.0,
                         "yaw": 0.0,
                     },
-                    "antennas": [0.0, 0.0],
+                    "left_arm": [0.0, 0.0],
+                    "right_arm": [0.0, 0.0],
                     "body_yaw": 0.0,
                     "duration": 2.0,
                     "interpolation": "minjerk",
                 },
                 {
-                    "antennas": [0.0, 0.0],
+                    "left_arm": [0.0, 0.0],
+                    "right_arm": [0.0, 0.0],
                     "duration": 1.0,
                     "interpolation": "linear",
                 },
@@ -142,9 +145,11 @@ async def goto(
     return create_move_task(
         backend.goto_target(
             head=goto_req.head_pose.to_pose_array() if goto_req.head_pose else None,
-            antennas=np.array(goto_req.antennas) if goto_req.antennas else None,
+            left_arm=np.array(goto_req.left_arm) if goto_req.left_arm else None,
+            right_arm=np.array(goto_req.right_arm) if goto_req.right_arm else None,
             body_yaw=goto_req.body_yaw,
             duration=goto_req.duration,
+            method=goto_req.interpolation,
         )
     )
 
@@ -227,7 +232,12 @@ async def set_target(
         head=target.target_head_pose.to_pose_array()
         if target.target_head_pose
         else None,
-        antennas=np.array(target.target_antennas) if target.target_antennas else None,
+        left_arm=np.array(target.target_left_arm)
+        if target.target_left_arm
+        else None,
+        right_arm=np.array(target.target_right_arm)
+        if target.target_right_arm
+        else None,
         body_yaw=target.target_body_yaw,
     )
     return {"status": "ok"}

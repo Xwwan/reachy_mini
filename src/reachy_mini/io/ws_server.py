@@ -174,7 +174,8 @@ class WSServer(AbstractServer):
                 try:
                     await self.backend.goto_target(
                         head=np.array(req.head).reshape(4, 4) if req.head else None,
-                        antennas=np.array(req.antennas) if req.antennas else None,
+                        left_arm=np.array(req.left_arm) if req.left_arm else None,
+                        right_arm=np.array(req.right_arm) if req.right_arm else None,
                         duration=req.duration,
                         method=req.method,
                         body_yaw=req.body_yaw,

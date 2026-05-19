@@ -53,7 +53,6 @@ class MockupSimBackend(Backend):
         )
 
         from reachy_mini.reachy_mini import (
-            SLEEP_ANTENNAS_JOINT_POSITIONS,
             SLEEP_HEAD_JOINT_POSITIONS,
         )
 
@@ -61,8 +60,11 @@ class MockupSimBackend(Backend):
         self._head_joint_positions: npt.NDArray[np.float64] = np.array(
             SLEEP_HEAD_JOINT_POSITIONS, dtype=np.float64
         )
-        self._antenna_joint_positions: npt.NDArray[np.float64] = np.array(
-            SLEEP_ANTENNAS_JOINT_POSITIONS, dtype=np.float64
+        self._left_arm_joint_positions: npt.NDArray[np.float64] = np.zeros(
+            2, dtype=np.float64
+        )
+        self._right_arm_joint_positions: npt.NDArray[np.float64] = np.zeros(
+            2, dtype=np.float64
         )
 
         self._motor_control_mode = MotorControlMode.Enabled
@@ -80,7 +82,8 @@ class MockupSimBackend(Backend):
         # Initialize kinematics with current positions
         self.update_head_kinematics_model(
             self._head_joint_positions,
-            self._antenna_joint_positions,
+            self._left_arm_joint_positions,
+            self._right_arm_joint_positions,
         )
 
         while not self.should_stop.is_set():
@@ -89,19 +92,27 @@ class MockupSimBackend(Backend):
             # Apply target positions immediately (no physics)
             if self.target_head_joint_positions is not None:
                 self._head_joint_positions = self.target_head_joint_positions.copy()
-            if self.target_antenna_joint_positions is not None:
-                self._antenna_joint_positions = (
-                    self.target_antenna_joint_positions.copy()
+            if self.target_left_arm_joint_positions is not None:
+                self._left_arm_joint_positions = (
+                    self.target_left_arm_joint_positions.copy()
+                )
+            if self.target_right_arm_joint_positions is not None:
+                self._right_arm_joint_positions = (
+                    self.target_right_arm_joint_positions.copy()
                 )
 
             # Update current states
             self.current_head_joint_positions = self._head_joint_positions.copy()
-            self.current_antenna_joint_positions = self._antenna_joint_positions.copy()
+            self.current_left_arm_joint_positions = self._left_arm_joint_positions.copy()
+            self.current_right_arm_joint_positions = (
+                self._right_arm_joint_positions.copy()
+            )
 
             # Update kinematics model (computes FK)
             self.update_head_kinematics_model(
                 self.current_head_joint_positions,
-                self.current_antenna_joint_positions,
+                self.current_left_arm_joint_positions,
+                self.current_right_arm_joint_positions,
             )
 
             # Update target head joint positions from IK if necessary
@@ -121,7 +132,8 @@ class MockupSimBackend(Backend):
                 self.joint_positions_publisher.put(
                     JointPositionsMsg(
                         head_joint_positions=self.current_head_joint_positions.tolist(),
-                        antennas_joint_positions=self.current_antenna_joint_positions.tolist(),
+                        left_arm_joint_positions=self.current_left_arm_joint_positions.tolist(),
+                        right_arm_joint_positions=self.current_right_arm_joint_positions.tolist(),
                     )
                 )
                 self.pose_publisher.put(
@@ -146,11 +158,17 @@ class MockupSimBackend(Backend):
         """Get the current joint positions of the head."""
         return self._head_joint_positions.copy()
 
-    def get_present_antenna_joint_positions(
+    def get_present_left_arm_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (2,)]:
-        """Get the current joint positions of the antennas."""
-        return self._antenna_joint_positions.copy()
+        """Get the current joint positions of the left arm."""
+        return self._left_arm_joint_positions.copy()
+
+    def get_present_right_arm_joint_positions(
+        self,
+    ) -> Annotated[npt.NDArray[np.float64], (2,)]:
+        """Get the current joint positions of the right arm."""
+        return self._right_arm_joint_positions.copy()
 
     def get_motor_control_mode(self) -> MotorControlMode:
         """Get the motor control mode."""

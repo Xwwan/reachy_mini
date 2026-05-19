@@ -196,14 +196,15 @@ class WSClient(AbstractClient):
     # Public query methods
     # ------------------------------------------------------------------
 
-    def get_current_joints(self) -> tuple[list[float], list[float]]:
+    def get_current_joints(self) -> tuple[list[float], list[float], list[float]]:
         """Get the current joint positions."""
         assert self._last_joint_positions is not None, (
             "No joint positions received yet. Wait for the client to connect."
         )
         return (
             self._last_joint_positions.head_joint_positions.copy(),
-            self._last_joint_positions.antennas_joint_positions.copy(),
+            self._last_joint_positions.left_arm_joint_positions.copy(),
+            self._last_joint_positions.right_arm_joint_positions.copy(),
         )
 
     def get_current_head_pose(self) -> npt.NDArray[np.float64]:

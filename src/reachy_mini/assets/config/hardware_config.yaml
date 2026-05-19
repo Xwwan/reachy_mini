@@ -56,7 +56,7 @@ serial:
 motors:
   - body_rotation:
       id: 10
-      offset: 0
+      offset: 1024
       lower_limit: 0
       upper_limit: 4095
       return_delay_time: 0
@@ -138,9 +138,9 @@ motors:
         - 300
         - 0
         - 0
-  - right_antenna:
+  - left_arm_1:
       id: 17
-      offset: 0
+      offset: 78
       lower_limit: 0
       upper_limit: 4095
       return_delay_time: 0
@@ -150,11 +150,37 @@ motors:
         - 200
         - 0
         - 0
-  - left_antenna:
+  - left_arm_2:
       id: 18
-      offset: 0
+      offset: 37
       lower_limit: 0
       upper_limit: 4095
+      return_delay_time: 0
+      shutdown_error: 52
+      operating_mode: 3
+      pid:
+        - 200
+        - 0
+        - 0
+  - right_arm_1:
+      id: 19
+      offset: 0
+      software_zero_offset_rad: -3.1048
+      lower_limit: -2048
+      upper_limit: 2048
+      return_delay_time: 0
+      shutdown_error: 52
+      operating_mode: 3
+      pid:
+        - 200
+        - 0
+        - 0
+  - right_arm_2:
+      id: 20
+      offset: 885
+      software_zero_offset_rad: 0.0
+      lower_limit: -1024
+      upper_limit: 3072
       return_delay_time: 0
       shutdown_error: 52
       operating_mode: 3

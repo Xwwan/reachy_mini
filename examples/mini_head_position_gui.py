@@ -85,7 +85,12 @@ def main() -> None:
             length=200,
         ).grid(row=6, column=1)
 
-        mini.goto_target(create_head_pose(), antennas=[0.0, 0.0], duration=1.0)
+        mini.goto_target(
+            create_head_pose(),
+            left_arm=[0.0, 0.0],
+            right_arm=[0.0, 0.0],
+            duration=1.0,
+        )
 
         def update_robot() -> None:
             """Update robot position based on GUI values."""
@@ -107,7 +112,8 @@ def main() -> None:
             mini.set_target(
                 head=head,
                 body_yaw=np.deg2rad(body_yaw_var.get()),
-                antennas=np.array([target, -target]),
+                left_arm=np.array([target, 0.0]),
+                right_arm=np.array([-target, 0.0]),
             )
 
             # Schedule next update (20ms = 50Hz)

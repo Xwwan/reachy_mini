@@ -79,15 +79,29 @@ class RobotBackend(Backend):
         )
 
         self.name2id = self.c.get_motor_name_id()
-        self._has_antennas = all(
-            name in self.name2id for name in ("right_antenna", "left_antenna")
-        )
-        self._has_arms = all(
-            name in self.name2id
-            for name in ("left_arm_1", "left_arm_2", "right_arm_1", "right_arm_2")
-        )
+        self.left_arm_software_zero_offset = np.zeros(2, dtype=np.float64)
+        self.right_arm_software_zero_offset = np.zeros(2, dtype=np.float64)
         if hardware_config_filepath is not None:
             config = parse_yaml_config(hardware_config_filepath)
+            self.left_arm_software_zero_offset = np.array(
+                [
+                    config.motors["left_arm_1"].software_zero_offset_rad,
+                    config.motors["left_arm_2"].software_zero_offset_rad,
+                ],
+                dtype=np.float64,
+            )
+            self.right_arm_software_zero_offset = np.array(
+                [
+                    config.motors["right_arm_1"].software_zero_offset_rad,
+                    config.motors["right_arm_2"].software_zero_offset_rad,
+                ],
+                dtype=np.float64,
+            )
+            self.logger.info(
+                "Arm software zero offsets: left=%s rad, right=%s rad",
+                self.left_arm_software_zero_offset.tolist(),
+                self.right_arm_software_zero_offset.tolist(),
+            )
             for motor_name, motor_conf in config.motors.items():
                 if motor_name not in self.name2id:
                     self.logger.warning(
@@ -123,8 +137,9 @@ class RobotBackend(Backend):
         }
 
         self._current_head_operation_mode = -1  # Default to torque control mode
-        self._current_antennas_operation_mode = -1  # Default to torque control mode
-        self.target_antenna_joint_current = None  # Placeholder for antenna joint torque
+        self._current_arms_operation_mode = -1  # Default to torque control mode
+        self.target_left_arm_joint_current = None  # Placeholder for arm joint torque
+        self.target_right_arm_joint_current = None  # Placeholder for arm joint torque
         self.target_head_joint_current = None  # Placeholder for head joint torque
 
         if hardware_error_check_frequency <= 0:
@@ -169,7 +184,7 @@ class RobotBackend(Backend):
 
         # Compute the forward kinematics to get the initial head pose
         # IMPORTANT for wake_up
-        head_positions, _ = self.get_all_joint_positions()
+        head_positions, _, _ = self.get_all_joint_positions()
         # make sure to converge fully (a lot of iterations)
         self.current_head_pose = self.head_kinematics.fk(
             np.array(head_positions),
@@ -219,30 +234,35 @@ class RobotBackend(Backend):
                     # Body rotation torque control is not supported with feetech motors
                     # self.c.set_body_rotation_goal_current(int(self.target_head_joint_current[0]))
 
-            if self._current_antennas_operation_mode != 0:  # if position control mode
-                if self.target_antenna_joint_positions is not None:
-                    if self._has_antennas:
-                        self.c.set_antennas_positions(
-                            self.target_antenna_joint_positions.tolist()
-                        )
-            # Antenna torque control is not supported with feetech motors
-            # else:
-            #     if self.target_antenna_joint_current is not None:
-            #         self.c.set_antennas_goal_current(
-            #            np.round(self.target_antenna_joint_current, 0).astype(int).tolist()
-            #         )
+            if self._current_arms_operation_mode != 0:  # if position control mode
+                if self.target_left_arm_joint_positions is not None:
+                    self.c.set_left_arm_positions(
+                        self._left_arm_logical_to_motor(
+                            self.target_left_arm_joint_positions
+                        ).tolist()
+                    )
+                if self.target_right_arm_joint_positions is not None:
+                    self.c.set_right_arm_positions(
+                        self._right_arm_logical_to_motor(
+                            self.target_right_arm_joint_positions
+                        ).tolist()
+                    )
+            # Arm torque control is not supported with feetech motors
 
         if (
             self.joint_positions_publisher is not None
             and self.pose_publisher is not None
         ):
             try:
-                head_positions, antenna_positions = self.get_all_joint_positions()
+                head_positions, left_arm_positions, right_arm_positions = (
+                    self.get_all_joint_positions()
+                )
 
                 # Update the head kinematics model with the current head positions
                 self.update_head_kinematics_model(
                     np.array(head_positions),
-                    np.array(antenna_positions),
+                    np.array(left_arm_positions),
+                    np.array(right_arm_positions),
                 )
 
                 # Update the target head joint positions from IK if necessary
@@ -261,7 +281,8 @@ class RobotBackend(Backend):
                     self.joint_positions_publisher.put(
                         JointPositionsMsg(
                             head_joint_positions=head_positions,
-                            antennas_joint_positions=antenna_positions,
+                            left_arm_joint_positions=left_arm_positions,
+                            right_arm_joint_positions=right_arm_positions,
                         )
                     )
                     self.pose_publisher.put(
@@ -365,7 +386,7 @@ class RobotBackend(Backend):
 
         Important:
             This method does not work well with the current feetech motors (body rotation), as they do not support torque control.
-            So the method disables the antennas when in torque control mode.
+            So the method disables the arms when in torque control mode.
             The dynamixel motors used for the head do support torque control, so this method works as expected.
 
         Args:
@@ -407,18 +428,18 @@ class RobotBackend(Backend):
 
         self._current_head_operation_mode = mode
 
-    def set_antennas_operation_mode(self, mode: int) -> None:
-        """Change the operation mode of the antennas motors.
+    def set_arms_operation_mode(self, mode: int) -> None:
+        """Change the operation mode of the arm motors.
 
         Args:
-            mode (int): The operation mode for the antennas motors (0: torque control, 3: position control, 5: current-based position control).
+            mode (int): The operation mode for the arm motors (0: torque control, 3: position control, 5: current-based position control).
 
         Important:
             This method does not work well with the current feetech motors, as they do not support torque control.
-            So the method disables the antennas when in torque control mode.
+            So the method disables the arms when in torque control mode.
 
         Args:
-            mode (int): The operation mode for the antennas motors.
+            mode (int): The operation mode for the arm motors.
                         This could be a specific mode like position control, velocity control, or torque control.
 
         """
@@ -431,59 +452,89 @@ class RobotBackend(Backend):
             "Invalid operation mode. Must be one of [0 (torque), 3 (position), 5 (current-limiting position)]."
         )
 
-        if self._current_antennas_operation_mode != mode:
+        if self._current_arms_operation_mode != mode:
             if mode != 0:
-                # if the mode is not torque control, we need to set the head joint positions
+                # if the mode is not torque control, we need to set arm targets
                 # to the current positions to avoid sudden movements
-                motor_pos = self.c.get_last_position()
-                if self._has_antennas:
-                    self.target_antenna_joint_positions = np.array(
-                        motor_pos.antennas
-                    )
-                    self.c.set_antennas_positions(
-                        self.target_antenna_joint_positions.tolist()
-                    )
-                    self.c.enable_antennas(True)
-                elif self._has_arms:
-                    self.target_antenna_joint_positions = np.array(
-                        motor_pos.left_arm
-                    )
-                    self.c.set_left_arm_operating_mode(mode)
-                    self.c.set_right_arm_operating_mode(mode)
-                    self.c.set_left_arm_positions(list(motor_pos.left_arm))
-                    self.c.set_right_arm_positions(list(motor_pos.right_arm))
-                    self.c.enable_left_arm(True)
-                    self.c.enable_right_arm(True)
+                positions = self.c.get_last_position()
+                self.target_left_arm_joint_positions = self._left_arm_motor_to_logical(
+                    positions.left_arm
+                )
+                self.target_right_arm_joint_positions = self._right_arm_motor_to_logical(
+                    positions.right_arm
+                )
+                self.c.set_left_arm_positions(
+                    self._left_arm_logical_to_motor(
+                        self.target_left_arm_joint_positions
+                    ).tolist()
+                )
+                self.c.set_right_arm_positions(
+                    self._right_arm_logical_to_motor(
+                        self.target_right_arm_joint_positions
+                    ).tolist()
+                )
+                self.c.enable_left_arm(True)
+                self.c.enable_right_arm(True)
             else:
-                if self._has_antennas:
-                    self.c.enable_antennas(False)
-                elif self._has_arms:
-                    self.c.enable_left_arm(False)
-                    self.c.enable_right_arm(False)
+                self.c.enable_left_arm(False)
+                self.c.enable_right_arm(False)
 
-            self._current_antennas_operation_mode = mode
+            self._current_arms_operation_mode = mode
 
-    def get_all_joint_positions(self) -> tuple[list[float], list[float]]:
+    def get_all_joint_positions(self) -> tuple[list[float], list[float], list[float]]:
         """Get the current joint positions of the robot.
 
         Returns:
-            tuple: A tuple containing two lists - the first list is for the head joint positions,
-                    and the second list is for the antenna joint positions.
+            tuple: head joint positions, left arm positions, right arm positions.
 
         """
         assert self.c is not None, "Motor controller not initialized or already closed."
         positions = self.c.get_last_position()
 
         yaw = positions.body_yaw
-        if self._has_antennas:
-            antennas = positions.antennas
-        elif self._has_arms:
-            antennas = positions.left_arm
-        else:
-            antennas = [0.0, 0.0]
+        left_arm = self._left_arm_motor_to_logical(positions.left_arm)
+        right_arm = self._right_arm_motor_to_logical(positions.right_arm)
         dofs = positions.stewart
 
-        return [yaw] + list(dofs), list(antennas)
+        return [yaw] + list(dofs), list(left_arm), list(right_arm)
+
+    def _left_arm_logical_to_motor(
+        self, positions: npt.ArrayLike
+    ) -> npt.NDArray[np.float64]:
+        """Convert public left-arm targets to motor-controller targets."""
+        return self._wrap_joint_angles(
+            np.array(positions, dtype=np.float64) + self.left_arm_software_zero_offset
+        )
+
+    def _right_arm_logical_to_motor(
+        self, positions: npt.ArrayLike
+    ) -> npt.NDArray[np.float64]:
+        """Convert public right-arm targets to motor-controller targets."""
+        return self._wrap_joint_angles(
+            np.array(positions, dtype=np.float64) + self.right_arm_software_zero_offset
+        )
+
+    def _left_arm_motor_to_logical(
+        self, positions: npt.ArrayLike
+    ) -> npt.NDArray[np.float64]:
+        """Convert motor-controller left-arm positions to public targets."""
+        return self._wrap_joint_angles(
+            np.array(positions, dtype=np.float64) - self.left_arm_software_zero_offset
+        )
+
+    def _right_arm_motor_to_logical(
+        self, positions: npt.ArrayLike
+    ) -> npt.NDArray[np.float64]:
+        """Convert motor-controller right-arm positions to public targets."""
+        return self._wrap_joint_angles(
+            np.array(positions, dtype=np.float64) - self.right_arm_software_zero_offset
+        )
+
+    @staticmethod
+    def _wrap_joint_angles(positions: npt.ArrayLike) -> npt.NDArray[np.float64]:
+        """Wrap joint angles to [-pi, pi] after applying software zero offsets."""
+        values = np.array(positions, dtype=np.float64)
+        return (values + np.pi) % (2.0 * np.pi) - np.pi
 
     def get_present_head_joint_positions(
         self,
@@ -496,16 +547,22 @@ class RobotBackend(Backend):
         """
         return np.array(self.get_all_joint_positions()[0])
 
-    def get_present_antenna_joint_positions(
+    def get_present_left_arm_joint_positions(
         self,
     ) -> Annotated[npt.NDArray[np.float64], (2,)]:
-        """Get the current joint positions of the antennas.
+        """Get the current joint positions of the left arm.
 
         Returns:
-            list: A list of joint positions for the antennas.
+            list: A list of joint positions for the left arm.
 
         """
         return np.array(self.get_all_joint_positions()[1])
+
+    def get_present_right_arm_joint_positions(
+        self,
+    ) -> Annotated[npt.NDArray[np.float64], (2,)]:
+        """Get the current joint positions of the right arm."""
+        return np.array(self.get_all_joint_positions()[2])
 
     def get_imu_data(self) -> ImuDataMsg | None:
         """Get current IMU data (accelerometer, gyroscope, quaternion, temperature).
@@ -585,7 +642,7 @@ class RobotBackend(Backend):
                 # First, make sure we switch to position control
                 self.disable_motors()
                 self.set_head_operation_mode(3)
-                self.set_antennas_operation_mode(3)
+                self.set_arms_operation_mode(3)
 
             self.gravity_compensation_mode = False
             self.enable_motors()
@@ -602,7 +659,7 @@ class RobotBackend(Backend):
 
             self.disable_motors()
             self.set_head_operation_mode(0)
-            self.set_antennas_operation_mode(0)
+            self.set_arms_operation_mode(0)
             self.gravity_compensation_mode = True
             self.enable_motors()
 

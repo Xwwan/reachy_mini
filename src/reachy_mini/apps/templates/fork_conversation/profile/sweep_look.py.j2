@@ -31,12 +31,12 @@ class SweepLook(Tool):
 
         # Get current state
         current_head_pose = deps.reachy_mini.get_current_head_pose()
-        head_joints, antenna_joints = deps.reachy_mini.get_current_joint_positions()
+        head_joints, left_arm_joints, right_arm_joints = deps.reachy_mini.get_current_joint_positions()
 
         # Extract body_yaw from head joints (first element of the 7 head joint positions)
         current_body_yaw = head_joints[0]
-        current_antenna1 = antenna_joints[0]
-        current_antenna2 = antenna_joints[1]
+        current_left_arm = tuple(left_arm_joints)
+        current_right_arm = tuple(right_arm_joints)
 
         # Define sweep parameters
         max_angle = 0.9 * np.pi  # Maximum rotation angle (radians)
@@ -48,8 +48,10 @@ class SweepLook(Tool):
         move_to_left = GotoQueueMove(
             target_head_pose=left_head_pose,
             start_head_pose=current_head_pose,
-            target_antennas=(current_antenna1, current_antenna2),
-            start_antennas=(current_antenna1, current_antenna2),
+            target_left_arm=current_left_arm,
+            start_left_arm=current_left_arm,
+            target_right_arm=current_right_arm,
+            start_right_arm=current_right_arm,
             target_body_yaw=current_body_yaw + max_angle,
             start_body_yaw=current_body_yaw,
             duration=transition_duration,
@@ -59,8 +61,10 @@ class SweepLook(Tool):
         hold_left = GotoQueueMove(
             target_head_pose=left_head_pose,
             start_head_pose=left_head_pose,
-            target_antennas=(current_antenna1, current_antenna2),
-            start_antennas=(current_antenna1, current_antenna2),
+            target_left_arm=current_left_arm,
+            start_left_arm=current_left_arm,
+            target_right_arm=current_right_arm,
+            start_right_arm=current_right_arm,
             target_body_yaw=current_body_yaw + max_angle,
             start_body_yaw=current_body_yaw + max_angle,
             duration=hold_duration,
@@ -71,8 +75,10 @@ class SweepLook(Tool):
         return_to_center_from_left = GotoQueueMove(
             target_head_pose=center_head_pose,
             start_head_pose=left_head_pose,
-            target_antennas=(current_antenna1, current_antenna2),
-            start_antennas=(current_antenna1, current_antenna2),
+            target_left_arm=current_left_arm,
+            start_left_arm=current_left_arm,
+            target_right_arm=current_right_arm,
+            start_right_arm=current_right_arm,
             target_body_yaw=current_body_yaw,
             start_body_yaw=current_body_yaw + max_angle,
             duration=transition_duration,
@@ -83,8 +89,10 @@ class SweepLook(Tool):
         move_to_right = GotoQueueMove(
             target_head_pose=right_head_pose,
             start_head_pose=center_head_pose,
-            target_antennas=(current_antenna1, current_antenna2),
-            start_antennas=(current_antenna1, current_antenna2),
+            target_left_arm=current_left_arm,
+            start_left_arm=current_left_arm,
+            target_right_arm=current_right_arm,
+            start_right_arm=current_right_arm,
             target_body_yaw=current_body_yaw - max_angle,
             start_body_yaw=current_body_yaw,
             duration=transition_duration,
@@ -94,8 +102,10 @@ class SweepLook(Tool):
         hold_right = GotoQueueMove(
             target_head_pose=right_head_pose,
             start_head_pose=right_head_pose,
-            target_antennas=(current_antenna1, current_antenna2),
-            start_antennas=(current_antenna1, current_antenna2),
+            target_left_arm=current_left_arm,
+            start_left_arm=current_left_arm,
+            target_right_arm=current_right_arm,
+            start_right_arm=current_right_arm,
             target_body_yaw=current_body_yaw - max_angle,
             start_body_yaw=current_body_yaw - max_angle,
             duration=hold_duration,
@@ -105,8 +115,10 @@ class SweepLook(Tool):
         return_to_center_final = GotoQueueMove(
             target_head_pose=center_head_pose,
             start_head_pose=right_head_pose,
-            target_antennas=(current_antenna1, current_antenna2),
-            start_antennas=(current_antenna1, current_antenna2),
+            target_left_arm=current_left_arm,
+            start_left_arm=current_left_arm,
+            target_right_arm=current_right_arm,
+            start_right_arm=current_right_arm,
             target_body_yaw=current_body_yaw,  # Return to original body yaw
             start_body_yaw=current_body_yaw - max_angle,
             duration=transition_duration,

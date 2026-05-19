@@ -18,7 +18,8 @@ async def _start_app_server(
     Returns (daemon, server, thread, port).
     """
     args = Args(
-        sim=True,
+        sim=False,
+        mockup_sim=True,
         headless=True,
         wake_up_on_start=False,
         no_media=True,
@@ -78,7 +79,7 @@ async def test_daemon_client_disconnection() -> None:
         with ReachyMini(host="localhost", port=port, media_backend="no_media") as mini:
             status = mini.client.get_status()
             assert status.state == "running"
-            assert status.simulation_enabled
+            assert status.mockup_sim_enabled
             assert status.error is None
             assert status.backend_status is not None
             assert status.backend_status.motor_control_mode == "enabled"
@@ -163,30 +164,30 @@ async def test_multi_robot_isolation() -> None:
             assert status1.state == "running"
             assert status2.state == "running"
 
-            # Read initial antenna positions from both robots
-            _, ant1_before = mini1.client.get_current_joints()
-            _, ant2_before = mini2.client.get_current_joints()
+            # Read initial arm positions from both robots
+            _, left1_before, _ = mini1.client.get_current_joints()
+            _, left2_before, _ = mini2.client.get_current_joints()
 
-            # Send antenna command ONLY to robot 1
-            new_antennas = [0.5, -0.5]
-            mini1.set_target_antenna_joint_positions(new_antennas)
+            # Send arm command ONLY to robot 1
+            new_left_arm = [0.5, -0.5]
+            mini1.set_target_left_arm_joint_positions(new_left_arm)
 
             # Wait for the command to take effect
             await asyncio.sleep(0.5)
 
-            _, ant1_after = mini1.client.get_current_joints()
-            _, ant2_after = mini2.client.get_current_joints()
+            _, left1_after, _ = mini1.client.get_current_joints()
+            _, left2_after, _ = mini2.client.get_current_joints()
 
-            # Robot 1 antennas should have moved toward the target
-            delta1 = np.max(np.abs(np.array(ant1_after) - np.array(ant1_before)))
+            # Robot 1 arm should have moved toward the target
+            delta1 = np.max(np.abs(np.array(left1_after) - np.array(left1_before)))
             assert delta1 > 0.1, (
-                f"Robot 1 antennas did not move after command (max delta={delta1})"
+                f"Robot 1 arm did not move after command (max delta={delta1})"
             )
 
-            # Robot 2 antennas should be untouched (only sim noise)
-            delta2 = np.max(np.abs(np.array(ant2_after) - np.array(ant2_before)))
+            # Robot 2 arm should be untouched (only sim noise)
+            delta2 = np.max(np.abs(np.array(left2_after) - np.array(left2_before)))
             assert delta2 < 0.01, (
-                f"Robot 2 antennas moved after commanding robot 1 (max delta={delta2})"
+                f"Robot 2 arm moved after commanding robot 1 (max delta={delta2})"
             )
 
     finally:

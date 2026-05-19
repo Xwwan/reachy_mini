@@ -195,8 +195,8 @@ class Rerun:
             "with_target_head_joints": "false",
             "with_body_yaw": "false",  # already in head_joints
             "with_target_body_yaw": "false",
-            "with_antenna_positions": "true",
-            "with_target_antenna_positions": "false",
+            "with_arm_positions": "true",
+            "with_target_arm_positions": "false",
             "use_pose_matrix": "false",
             "with_passive_joints": "false",  # computed via placo FK
         }
@@ -253,23 +253,15 @@ class Rerun:
                 for name, value in zip(actuated_joint_names, head_joints):
                     rr.log(f"joints/{name}", rr.Scalars(value), recording=self.recording)
 
-            if "antennas_position" in data and data["antennas_position"] is not None:
-                antennas = data["antennas_position"]
-                if antennas is not None:
-                    left = self._joints_by_name["left_antenna"]
-                    right = self._joints_by_name["right_antenna"]
-                    rr.log(
-                        "transforms/left_antenna",
-                        left.compute_transform(antennas[0]),
-                        recording=self.recording,
-                    )
-                    rr.log(
-                        "transforms/right_antenna",
-                        right.compute_transform(antennas[1]),
-                        recording=self.recording,
-                    )
-                    rr.log("joints/left_antenna", rr.Scalars(antennas[0]), recording=self.recording)
-                    rr.log("joints/right_antenna", rr.Scalars(antennas[1]), recording=self.recording)
+            if "left_arm_position" in data and data["left_arm_position"] is not None:
+                left_arm = data["left_arm_position"]
+                rr.log("joints/left_arm_1", rr.Scalars(left_arm[0]), recording=self.recording)
+                rr.log("joints/left_arm_2", rr.Scalars(left_arm[1]), recording=self.recording)
+
+            if "right_arm_position" in data and data["right_arm_position"] is not None:
+                right_arm = data["right_arm_position"]
+                rr.log("joints/right_arm_1", rr.Scalars(right_arm[0]), recording=self.recording)
+                rr.log("joints/right_arm_2", rr.Scalars(right_arm[1]), recording=self.recording)
 
             # Sleep only the remainder to hit 50Hz target
             elapsed = time.time() - loop_start

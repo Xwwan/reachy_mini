@@ -48,12 +48,14 @@ def _patch_async_goto(
     async def fake_async_goto(
         send_response: Callable[[dict[str, Any]], None],
         head: Any,
-        antennas: Any,
+        left_arm: Any,
+        right_arm: Any,
         duration: float,
         body_yaw: float | None,
     ) -> None:
         captured["head"] = head
-        captured["antennas"] = antennas
+        captured["left_arm"] = left_arm
+        captured["right_arm"] = right_arm
         captured["duration"] = duration
         captured["body_yaw"] = body_yaw
         send_response({"status": "ok", "command": "goto_target", "completed": True})
@@ -92,21 +94,23 @@ async def test_goto_target_reshapes_flat_head_to_4x4() -> None:
     np.testing.assert_array_equal(head, pose)
     assert captured["duration"] == 0.25
     assert captured["body_yaw"] == 0.1
-    assert captured["antennas"] is None
+    assert captured["left_arm"] is None
+    assert captured["right_arm"] is None
 
 
 @pytest.mark.asyncio
 async def test_goto_target_passes_none_when_head_omitted() -> None:
-    """Antennas-only goto must keep head as None (no spurious reshape)."""
+    """Arms-only goto must keep head as None (no spurious reshape)."""
     backend = _make_backend()
     captured = _patch_async_goto(backend)
 
-    cmd = GotoTargetCmd(antennas=[0.1, -0.1], duration=0.5)
+    cmd = GotoTargetCmd(left_arm=[0.1, -0.1], right_arm=[0.2, -0.2], duration=0.5)
     backend.process_command(cmd, send_response=lambda _: None)
     await asyncio.sleep(0)
 
     assert captured["head"] is None
-    np.testing.assert_array_equal(captured["antennas"], np.array([0.1, -0.1]))
+    np.testing.assert_array_equal(captured["left_arm"], np.array([0.1, -0.1]))
+    np.testing.assert_array_equal(captured["right_arm"], np.array([0.2, -0.2]))
 
 
 @pytest.mark.asyncio

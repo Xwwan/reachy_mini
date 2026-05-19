@@ -3,7 +3,7 @@
 All messages use a {"type": "...", ...payload} envelope.
 
 Client->Server command types:
-    set_target, set_head_joints, set_body_yaw, set_antennas, set_full_target,
+    set_target, set_head_joints, set_body_yaw, set_arms, set_full_target,
     goto_target, wake_up, goto_sleep, play_sound,
     set_motor_mode, set_torque, get_motor_mode,
     set_gravity_compensation, set_automatic_body_yaw,
@@ -124,33 +124,36 @@ class SetBodyYawCmd(BaseModel):
     body_yaw: float
 
 
-class SetAntennasCmd(BaseModel):
-    """Set the target antenna positions [right, left] (radians)."""
+class SetArmsCmd(BaseModel):
+    """Set the target arm positions in radians."""
 
-    type: Literal["set_antennas"] = "set_antennas"
-    antennas: list[float]
+    type: Literal["set_arms"] = "set_arms"
+    left_arm: list[float] | None = None
+    right_arm: list[float] | None = None
 
 
 class SetFullTargetCmd(BaseModel):
-    """Set head, antennas, and body_yaw in a single message.
+    """Set head, arms, and body_yaw in a single message.
 
     All fields are optional so callers can send any subset.
     This avoids the overhead of three separate WebSocket messages
-    when updating head + antennas + body_yaw together.
+    when updating head + arms + body_yaw together.
     """
 
     type: Literal["set_full_target"] = "set_full_target"
     head: list[float] | None = None
-    antennas: list[float] | None = None
+    left_arm: list[float] | None = None
+    right_arm: list[float] | None = None
     body_yaw: float | None = None
 
 
 class GotoTargetCmd(BaseModel):
-    """Smooth interpolated goto with optional head, antennas, and body yaw."""
+    """Smooth interpolated goto with optional head, arms, and body yaw."""
 
     type: Literal["goto_target"] = "goto_target"
     head: list[float] | None = None
-    antennas: list[float] | None = None
+    left_arm: list[float] | None = None
+    right_arm: list[float] | None = None
     duration: float = 0.5
     body_yaw: float | None = None
 
@@ -309,7 +312,7 @@ AnyCommand = Annotated[
     SetTargetCmd
     | SetHeadJointsCmd
     | SetBodyYawCmd
-    | SetAntennasCmd
+    | SetArmsCmd
     | SetFullTargetCmd
     | GotoTargetCmd
     | WakeUpCmd
@@ -344,11 +347,12 @@ command_adapter: TypeAdapter[AnyCommand] = TypeAdapter(AnyCommand)
 
 
 class JointPositionsMsg(BaseModel):
-    """Head and antenna joint positions (published at 50 Hz)."""
+    """Head and arm joint positions (published at 50 Hz)."""
 
     type: Literal["joint_positions"] = "joint_positions"
     head_joint_positions: list[float]
-    antennas_joint_positions: list[float]
+    left_arm_joint_positions: list[float]
+    right_arm_joint_positions: list[float]
 
 
 class HeadPoseMsg(BaseModel):
@@ -413,7 +417,8 @@ class GotoTaskRequest(BaseModel):
     """A goto target task."""
 
     head: list[float] | None  # 4x4 flatten pose matrix
-    antennas: list[float] | None  # [right_angle, left_angle] (in rads)
+    left_arm: list[float] | None
+    right_arm: list[float] | None
     duration: float
     method: InterpolationTechnique
     body_yaw: float | None

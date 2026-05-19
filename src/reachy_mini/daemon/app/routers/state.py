@@ -44,14 +44,15 @@ async def get_body_yaw(
     return backend.get_present_body_yaw()
 
 
-@router.get("/present_antenna_joint_positions")
-async def get_antenna_joint_positions(
+@router.get("/present_arm_joint_positions")
+async def get_arm_joint_positions(
     backend: Backend = Depends(get_backend),
-) -> tuple[float, float]:
-    """Get the present antenna joint positions (in radians) - (left, right)."""
-    pos = backend.get_present_antenna_joint_positions()
-    assert len(pos) == 2
-    return (pos[0], pos[1])
+) -> dict[str, tuple[float, float]]:
+    """Get the present arm joint positions in radians."""
+    left = backend.get_present_left_arm_joint_positions()
+    right = backend.get_present_right_arm_joint_positions()
+    assert len(left) == 2 and len(right) == 2
+    return {"left_arm": (left[0], left[1]), "right_arm": (right[0], right[1])}
 
 
 @router.get("/doa")
@@ -80,8 +81,8 @@ async def get_full_state(
     with_target_head_joints: bool = False,
     with_body_yaw: bool = True,
     with_target_body_yaw: bool = False,
-    with_antenna_positions: bool = True,
-    with_target_antenna_positions: bool = False,
+    with_arm_positions: bool = True,
+    with_target_arm_positions: bool = False,
     with_passive_joints: bool = False,
     with_doa: bool = False,
     use_pose_matrix: bool = False,
@@ -108,10 +109,12 @@ async def get_full_state(
         result["body_yaw"] = backend.get_present_body_yaw()
     if with_target_body_yaw:
         result["target_body_yaw"] = backend.target_body_yaw
-    if with_antenna_positions:
-        result["antennas_position"] = backend.get_present_antenna_joint_positions()
-    if with_target_antenna_positions:
-        result["target_antennas_position"] = backend.target_antenna_joint_positions
+    if with_arm_positions:
+        result["left_arm_position"] = backend.get_present_left_arm_joint_positions()
+        result["right_arm_position"] = backend.get_present_right_arm_joint_positions()
+    if with_target_arm_positions:
+        result["target_left_arm_position"] = backend.target_left_arm_joint_positions
+        result["target_right_arm_position"] = backend.target_right_arm_joint_positions
     if with_passive_joints:
         joints = backend.get_present_passive_joint_positions()
         if joints is not None:
@@ -137,8 +140,8 @@ async def ws_full_state(
     with_target_head_joints: bool = False,
     with_body_yaw: bool = True,
     with_target_body_yaw: bool = False,
-    with_antenna_positions: bool = True,
-    with_target_antenna_positions: bool = False,
+    with_arm_positions: bool = True,
+    with_target_arm_positions: bool = False,
     with_passive_joints: bool = False,
     with_doa: bool = False,
     use_pose_matrix: bool = False,
@@ -157,8 +160,8 @@ async def ws_full_state(
                 with_target_head_joints=with_target_head_joints,
                 with_body_yaw=with_body_yaw,
                 with_target_body_yaw=with_target_body_yaw,
-                with_antenna_positions=with_antenna_positions,
-                with_target_antenna_positions=with_target_antenna_positions,
+                with_arm_positions=with_arm_positions,
+                with_target_arm_positions=with_target_arm_positions,
                 with_passive_joints=with_passive_joints,
                 with_doa=with_doa,
                 use_pose_matrix=use_pose_matrix,

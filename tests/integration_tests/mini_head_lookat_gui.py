@@ -65,7 +65,12 @@ def main():
             length=200,
         ).grid(row=3, column=1)
 
-        mini.goto_target(create_head_pose(), antennas=[0.0, 0.0], duration=1.0)
+        mini.goto_target(
+            create_head_pose(),
+            left_arm=[0.0, 0.0],
+            right_arm=[0.0, 0.0],
+            duration=1.0,
+        )
 
         # Run the GUI in a non-blocking way
         root.update()
@@ -91,7 +96,8 @@ def main():
                 mini.set_target(
                     head=head,
                     body_yaw=np.deg2rad(body_yaw_var.get()),
-                    antennas=np.array([target, -target]),
+                    left_arm=np.array([target, 0.0]),
+                    right_arm=np.array([-target, 0.0]),
                 )
 
         except KeyboardInterrupt:

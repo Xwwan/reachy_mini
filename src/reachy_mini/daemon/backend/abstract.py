@@ -41,7 +41,7 @@ from reachy_mini.io.protocol import (
     PlaySoundCmd,
     RecordedDataMsg,
     RobotBackendStatus,
-    SetAntennasCmd,
+    SetArmsCmd,
     SetAutomaticBodyYawCmd,
     SetBodyYawCmd,
     SetFullTargetCmd,
@@ -151,10 +151,16 @@ class Backend:
         self.current_head_joint_positions: (
             Annotated[NDArray[np.float64], (7,)] | None
         ) = None  # [yaw, 0, 1, 2, 3, 4, 5]
-        self.target_antenna_joint_positions: (
+        self.target_left_arm_joint_positions: (
             Annotated[NDArray[np.float64], (2,)] | None
         ) = None  # [0, 1]
-        self.current_antenna_joint_positions: (
+        self.target_right_arm_joint_positions: (
+            Annotated[NDArray[np.float64], (2,)] | None
+        ) = None  # [0, 1]
+        self.current_left_arm_joint_positions: (
+            Annotated[NDArray[np.float64], (2,)] | None
+        ) = None  # [0, 1]
+        self.current_right_arm_joint_positions: (
             Annotated[NDArray[np.float64], (2,)] | None
         ) = None  # [0, 1]
 
@@ -378,31 +384,48 @@ class Backend:
     def set_target(
         self,
         head: Annotated[NDArray[np.float64], (4, 4)] | None = None,  # 4x4 pose matrix
-        antennas: Annotated[NDArray[np.float64], (2,)]
-        | None = None,  # [right_angle, left_angle] (in rads)
+        left_arm: Annotated[NDArray[np.float64], (2,)] | None = None,
+        right_arm: Annotated[NDArray[np.float64], (2,)] | None = None,
         body_yaw: float | None = None,  # Body yaw angle in radians
     ) -> None:
-        """Set the target head pose and/or antenna positions and/or body_yaw."""
+        """Set the target head pose, arm positions, and/or body_yaw."""
         if head is not None:
             self.set_target_head_pose(head)
 
         if body_yaw is not None:
             self.set_target_body_yaw(body_yaw)
 
-        if antennas is not None:
-            self.set_target_antenna_joint_positions(antennas)
+        self.set_target_arm_joint_positions(left_arm=left_arm, right_arm=right_arm)
 
-    def set_target_antenna_joint_positions(
+    def set_target_left_arm_joint_positions(
         self,
         positions: Annotated[NDArray[np.float64], (2,)],
     ) -> None:
-        """Set the antenna joint positions.
+        """Set the left arm joint positions.
 
         Args:
-            positions (List[float]): A list of joint positions for the antenna.
+            positions: A list of two left arm joint positions.
 
         """
-        self.target_antenna_joint_positions = positions
+        self.target_left_arm_joint_positions = positions
+
+    def set_target_right_arm_joint_positions(
+        self,
+        positions: Annotated[NDArray[np.float64], (2,)],
+    ) -> None:
+        """Set the right arm joint positions."""
+        self.target_right_arm_joint_positions = positions
+
+    def set_target_arm_joint_positions(
+        self,
+        left_arm: Annotated[NDArray[np.float64], (2,)] | None = None,
+        right_arm: Annotated[NDArray[np.float64], (2,)] | None = None,
+    ) -> None:
+        """Set left and/or right arm joint positions."""
+        if left_arm is not None:
+            self.set_target_left_arm_joint_positions(left_arm)
+        if right_arm is not None:
+            self.set_target_right_arm_joint_positions(right_arm)
 
     def set_target_head_joint_current(
         self,
@@ -437,14 +460,13 @@ class Backend:
 
         try:
             if initial_goto_duration > 0.0:
-                start_head_pose, start_antennas_positions, start_body_yaw = (
-                    move.evaluate(0.0)
-                )
+                start_target = move.evaluate(0.0)
                 await self.goto_target(
-                    head=start_head_pose,
-                    antennas=start_antennas_positions,
+                    head=start_target.head,
+                    left_arm=start_target.left_arm,
+                    right_arm=start_target.right_arm,
                     duration=initial_goto_duration,
-                    body_yaw=start_body_yaw,
+                    body_yaw=start_target.body_yaw,
                 )
             sleep_period = 1.0 / play_frequency
 
@@ -455,42 +477,55 @@ class Backend:
             while time.time() - t0 < move.duration:
                 t = time.time() - t0
 
-                head, antennas, body_yaw = move.evaluate(t)
-                if head is not None:
-                    self.set_target_head_pose(head)
-                if body_yaw is not None:
-                    self.set_target_body_yaw(body_yaw)
-                if antennas is not None:
-                    self.set_target_antenna_joint_positions(antennas)
+                target = move.evaluate(t)
+                if target.head is not None:
+                    self.set_target_head_pose(target.head)
+                if target.body_yaw is not None:
+                    self.set_target_body_yaw(target.body_yaw)
+                self.set_target_arm_joint_positions(
+                    left_arm=target.left_arm,
+                    right_arm=target.right_arm,
+                )
 
                 elapsed = time.time() - t0 - t
                 if elapsed < sleep_period:
                     await asyncio.sleep(sleep_period - elapsed)
                 else:
                     await asyncio.sleep(0.001)
+
+            final_target = move.evaluate(move.duration)
+            if final_target.head is not None:
+                self.set_target_head_pose(final_target.head)
+            if final_target.body_yaw is not None:
+                self.set_target_body_yaw(final_target.body_yaw)
+            self.set_target_arm_joint_positions(
+                left_arm=final_target.left_arm,
+                right_arm=final_target.right_arm,
+            )
         finally:
             self._end_move()
 
     async def goto_target(
         self,
         head: Annotated[NDArray[np.float64], (4, 4)] | None = None,  # 4x4 pose matrix
-        antennas: Annotated[NDArray[np.float64], (2,)]
-        | None = None,  # [right_angle, left_angle] (in rads)
+        left_arm: Annotated[NDArray[np.float64], (2,)] | None = None,
+        right_arm: Annotated[NDArray[np.float64], (2,)] | None = None,
         duration: float = 0.5,  # Duration in seconds for the movement, default is 0.5 seconds.
         method: InterpolationTechnique = InterpolationTechnique.MIN_JERK,  # can be "linear", "minjerk", "ease_in_out" or "cartoon", default is "minjerk"
         body_yaw: float | None = 0.0,  # Body yaw angle in radians
     ) -> None:
-        """Asynchronously go to a target head pose and/or antennas position using task space interpolation, in "duration" seconds.
+        """Asynchronously go to a target head pose and/or arm position using task space interpolation.
 
         Args:
             head (np.ndarray | None): 4x4 pose matrix representing the target head pose.
-            antennas (np.ndarray | list[float] | None): 1D array with two elements representing the angles of the antennas in radians.
+            left_arm (np.ndarray | list[float] | None): Left arm joint angles in radians.
+            right_arm (np.ndarray | list[float] | None): Right arm joint angles in radians.
             duration (float): Duration of the movement in seconds.
             method (str): Interpolation method to use ("linear", "minjerk", "ease_in_out", "cartoon"). Default is "minjerk".
             body_yaw (float | None): Body yaw angle in radians.
 
         Raises:
-            ValueError: If neither head nor antennas are provided, or if duration is not positive.
+            ValueError: If no target is provided, or if duration is not positive.
 
         """
         return await self.play_move(
@@ -499,8 +534,10 @@ class Backend:
                 target_head_pose=head,
                 start_body_yaw=self.get_present_body_yaw(),
                 target_body_yaw=body_yaw,
-                start_antennas=np.array(self.get_present_antenna_joint_positions()),
-                target_antennas=np.array(antennas) if antennas is not None else None,
+                start_left_arm=np.array(self.get_present_left_arm_joint_positions()),
+                target_left_arm=np.array(left_arm) if left_arm is not None else None,
+                start_right_arm=np.array(self.get_present_right_arm_joint_positions()),
+                target_right_arm=np.array(right_arm) if right_arm is not None else None,
                 duration=duration,
                 method=method,
             )
@@ -510,42 +547,36 @@ class Backend:
         self,
         head_joint_positions: list[float]
         | None = None,  # [yaw, stewart_platform x 6] length 7
-        antennas_joint_positions: list[float]
-        | None = None,  # [right_angle, left_angle] length 2
+        left_arm_joint_positions: list[float] | None = None,
+        right_arm_joint_positions: list[float] | None = None,
         duration: float = 0.5,  # Duration in seconds for the movement
         method: InterpolationTechnique = InterpolationTechnique.MIN_JERK,  # can be "linear", "minjerk", "ease_in_out" or "cartoon", default is "minjerk"
     ) -> None:
-        """Asynchronously go to a target head joint positions and/or antennas joint positions using joint space interpolation, in "duration" seconds.
+        """Asynchronously go to target head and/or arm joint positions."""
 
-        Go to a target head joint positions and/or antennas joint positions using joint space interpolation, in "duration" seconds.
-
-        Args:
-            head_joint_positions (Optional[List[float]]): List of head joint positions in radians (length 7).
-            antennas_joint_positions (Optional[List[float]]): List of antennas joint positions in radians (length 2).
-            duration (float): Duration of the movement in seconds. Default is 0.5 seconds.
-            method (str): Interpolation method to use ("linear", "minjerk", "ease_in_out", "cartoon"). Default is "minjerk".
-
-        Raises:
-            ValueError: If neither head_joint_positions nor antennas_joint_positions are provided, or if duration is not positive.
-
-        """
         if duration <= 0.0:
             raise ValueError(
                 "Duration must be positive and non-zero. Use set_target() for immediate position setting."
             )
 
         start_head = np.array(self.get_present_head_joint_positions())
-        start_antennas = np.array(self.get_present_antenna_joint_positions())
+        start_left_arm = np.array(self.get_present_left_arm_joint_positions())
+        start_right_arm = np.array(self.get_present_right_arm_joint_positions())
 
         target_head = (
             np.array(head_joint_positions)
             if head_joint_positions is not None
             else start_head
         )
-        target_antennas = (
-            np.array(antennas_joint_positions)
-            if antennas_joint_positions is not None
-            else start_antennas
+        target_left_arm = (
+            np.array(left_arm_joint_positions)
+            if left_arm_joint_positions is not None
+            else start_left_arm
+        )
+        target_right_arm = (
+            np.array(right_arm_joint_positions)
+            if right_arm_joint_positions is not None
+            else start_right_arm
         )
 
         t0 = time.time()
@@ -555,12 +586,15 @@ class Backend:
             interp_time = time_trajectory(t / duration, method=method)
 
             head_joint = start_head + (target_head - start_head) * interp_time
-            antennas_joint = (
-                start_antennas + (target_antennas - start_antennas) * interp_time
+            left_arm_joint = (
+                start_left_arm + (target_left_arm - start_left_arm) * interp_time
+            )
+            right_arm_joint = (
+                start_right_arm + (target_right_arm - start_right_arm) * interp_time
             )
 
             self.set_target_head_joint_positions(head_joint)
-            self.set_target_antenna_joint_positions(antennas_joint)
+            self.set_target_arm_joint_positions(left_arm_joint, right_arm_joint)
             await asyncio.sleep(0.01)
 
     def set_recording_publisher(self, publisher: Publisher) -> None:
@@ -631,28 +665,41 @@ class Backend:
         """Return the present head pose as a 4x4 matrix."""
         return self.get_present_head_pose()
 
-    def get_present_antenna_joint_positions(
+    def get_present_left_arm_joint_positions(
         self,
     ) -> Annotated[NDArray[np.float64], (2,)]:
-        """Return the present antenna joint positions.
+        """Return the present left arm joint positions.
 
         This method is a placeholder and should be overridden by subclasses.
         """
         raise NotImplementedError(
-            "The method get_present_antenna_joint_positions should be overridden by subclasses."
+            "The method get_present_left_arm_joint_positions should be overridden by subclasses."
+        )
+
+    def get_present_right_arm_joint_positions(
+        self,
+    ) -> Annotated[NDArray[np.float64], (2,)]:
+        """Return the present right arm joint positions.
+
+        This method is a placeholder and should be overridden by subclasses.
+        """
+        raise NotImplementedError(
+            "The method get_present_right_arm_joint_positions should be overridden by subclasses."
         )
 
     # Kinematics methods
     def update_head_kinematics_model(
         self,
         head_joint_positions: Annotated[NDArray[np.float64], (7,)] | None = None,
-        antennas_joint_positions: Annotated[NDArray[np.float64], (2,)] | None = None,
+        left_arm_joint_positions: Annotated[NDArray[np.float64], (2,)] | None = None,
+        right_arm_joint_positions: Annotated[NDArray[np.float64], (2,)] | None = None,
     ) -> None:
         """Update the placo kinematics of the robot.
 
         Args:
             head_joint_positions (List[float] | None): The joint positions of the head.
-            antennas_joint_positions (List[float] | None): The joint positions of the antennas.
+            left_arm_joint_positions: The joint positions of the left arm.
+            right_arm_joint_positions: The joint positions of the right arm.
 
         Returns:
             None: This method does not return anything.
@@ -662,11 +709,11 @@ class Backend:
         - If the head joint positions have not changed, it will return without recomputing the forward kinematics.
         - If the head joint positions have changed, it will compute the forward kinematics to get the current head pose.
         - If the forward kinematics fails, it will raise an assertion error.
-        - If the antennas joint positions are provided, it will update the current antenna joint positions.
+        - If arm joint positions are provided, it will update the current arm joint positions.
 
         Note:
             This method will update the `current_head_pose` and `current_head_joint_positions`
-            attributes of the backend instance with the computed values. And the `current_antenna_joint_positions` if provided.
+            attributes of the backend instance with the computed values and arm positions if provided.
 
         """
         if head_joint_positions is None:
@@ -683,8 +730,10 @@ class Backend:
         # Store the last head joint positions
         self.current_head_joint_positions = head_joint_positions
 
-        if antennas_joint_positions is not None:
-            self.current_antenna_joint_positions = antennas_joint_positions
+        if left_arm_joint_positions is not None:
+            self.current_left_arm_joint_positions = left_arm_joint_positions
+        if right_arm_joint_positions is not None:
+            self.current_right_arm_joint_positions = right_arm_joint_positions
 
     def set_automatic_body_yaw(self, body_yaw: bool) -> None:
         """Set the automatic body yaw.
@@ -727,6 +776,10 @@ class Backend:
 
     # Basic move definitions
     INIT_HEAD_POSE = np.eye(4)
+    # Arm homing offsets are configured on the motors via hardware_config.yaml.
+    # In SDK target space, the calibrated arm home is therefore 0 rad for each joint.
+    INIT_ARM_JOINT_POSITIONS = np.zeros(2, dtype=np.float64)
+    WAKE_UP_HOME_DURATION = 2.0
 
     SLEEP_HEAD_JOINT_POSITIONS = [
         0,
@@ -738,8 +791,6 @@ class Backend:
         1.0032234352772091,
     ]
 
-    INIT_ANTENNAS_JOINT_POSITIONS = np.array((-0.1745, 0.1745))  # ~10° offset to reduce shaking at vertical
-    SLEEP_ANTENNAS_JOINT_POSITIONS = np.array((-3.05, 3.05))
     SLEEP_HEAD_POSE = np.array(
         [
             [0.911, 0.004, 0.413, -0.021],
@@ -750,17 +801,22 @@ class Backend:
     )
 
     async def wake_up(self) -> None:
-        """Wake up the robot - go to the initial head position and play the wake up emote and sound."""
+        """Wake up the robot - go to the initial head/arm position and play the wake up emote and sound."""
         await asyncio.sleep(0.1)
 
         _, _, magic_distance = distance_between_poses(
             self.get_current_head_pose(), self.INIT_HEAD_POSE
         )
+        home_duration = max(
+            magic_distance * 20 / 1000,  # ms_per_magic_mm = 10
+            self.WAKE_UP_HOME_DURATION,
+        )
 
         await self.goto_target(
-            self.INIT_HEAD_POSE,
-            antennas=self.INIT_ANTENNAS_JOINT_POSITIONS,
-            duration=magic_distance * 20 / 1000,  # ms_per_magic_mm = 10
+            head=self.INIT_HEAD_POSE,
+            left_arm=self.INIT_ARM_JOINT_POSITIONS,
+            right_arm=self.INIT_ARM_JOINT_POSITIONS,
+            duration=home_duration,
         )
         await asyncio.sleep(0.1)
 
@@ -776,7 +832,7 @@ class Backend:
         await self.goto_target(self.INIT_HEAD_POSE, duration=0.2)
 
     async def goto_sleep(self) -> None:
-        """Put the robot to sleep by moving the head and antennas to a predefined sleep position.
+        """Put the robot to sleep by moving the head to a predefined sleep position.
 
         - If we are already very close to the sleep position, we do nothing.
         - If we are far from the sleep position:
@@ -796,19 +852,13 @@ class Backend:
         if dist_to_sleep_pose > 10:
             if dist_to_init_pose > 30:
                 # Move to the initial position
-                await self.goto_target(
-                    self.INIT_HEAD_POSE, antennas=self.INIT_ANTENNAS_JOINT_POSITIONS, duration=1
-                )
+                await self.goto_target(self.INIT_HEAD_POSE, duration=1)
                 await asyncio.sleep(0.2)
 
             self.play_sound("go_sleep.wav")
 
             # Move to the sleep position
-            await self.goto_target(
-                self.SLEEP_HEAD_POSE,
-                antennas=self.SLEEP_ANTENNAS_JOINT_POSITIONS,
-                duration=2,
-            )
+            await self.goto_target(self.SLEEP_HEAD_POSE, duration=2)
         else:
             # The sound doesn't play fully if we don't wait enough
             self.play_sound("go_sleep.wav")
@@ -929,10 +979,15 @@ class Backend:
                 self.set_target_body_yaw(cmd.body_yaw)
             send_response({"status": "ok", "command": "set_body_yaw"})
 
-        elif isinstance(cmd, SetAntennasCmd):
-            if not _maybe_ignore("set_antennas"):
-                self.set_target_antenna_joint_positions(np.array(cmd.antennas))
-            send_response({"status": "ok", "command": "set_antennas"})
+        elif isinstance(cmd, SetArmsCmd):
+            if not _maybe_ignore("set_arms"):
+                self.set_target_arm_joint_positions(
+                    left_arm=np.array(cmd.left_arm) if cmd.left_arm is not None else None,
+                    right_arm=np.array(cmd.right_arm)
+                    if cmd.right_arm is not None
+                    else None,
+                )
+            send_response({"status": "ok", "command": "set_arms"})
 
         elif isinstance(cmd, SetFullTargetCmd):
             if not _maybe_ignore("set_full_target"):
@@ -940,16 +995,26 @@ class Backend:
                     self.set_target_head_pose(np.array(cmd.head).reshape(4, 4))
                 if cmd.body_yaw is not None:
                     self.set_target_body_yaw(cmd.body_yaw)
-                if cmd.antennas is not None:
-                    self.set_target_antenna_joint_positions(np.array(cmd.antennas))
+                self.set_target_arm_joint_positions(
+                    left_arm=np.array(cmd.left_arm) if cmd.left_arm is not None else None,
+                    right_arm=np.array(cmd.right_arm)
+                    if cmd.right_arm is not None
+                    else None,
+                )
             send_response({"status": "ok", "command": "set_full_target"})
 
         elif isinstance(cmd, GotoTargetCmd):
             head = np.array(cmd.head).reshape(4, 4) if cmd.head else None
-            antennas = np.array(cmd.antennas) if cmd.antennas else None
+            left_arm = np.array(cmd.left_arm) if cmd.left_arm else None
+            right_arm = np.array(cmd.right_arm) if cmd.right_arm else None
             asyncio.create_task(
                 self._async_goto(
-                    send_response, head, antennas, cmd.duration, cmd.body_yaw
+                    send_response,
+                    head,
+                    left_arm,
+                    right_arm,
+                    cmd.duration,
+                    cmd.body_yaw,
                 )
             )
 
@@ -999,8 +1064,11 @@ class Backend:
                 "head_pose": self.get_present_head_pose().tolist()
                 if self.current_head_pose is not None
                 else None,
-                "antennas": self.get_present_antenna_joint_positions().tolist()
-                if self.current_antenna_joint_positions is not None
+                "left_arm": self.get_present_left_arm_joint_positions().tolist()
+                if self.current_left_arm_joint_positions is not None
+                else None,
+                "right_arm": self.get_present_right_arm_joint_positions().tolist()
+                if self.current_right_arm_joint_positions is not None
                 else None,
                 "body_yaw": self.get_present_body_yaw(),
                 "motor_mode": self.get_motor_control_mode().value,
@@ -1212,14 +1280,19 @@ class Backend:
         self,
         send_response: Callable[[dict[str, Any]], None],
         head: Any,
-        antennas: Any,
+        left_arm: Any,
+        right_arm: Any,
         duration: float,
         body_yaw: float | None,
     ) -> None:
         """Execute goto_target and send response when done."""
         try:
             await self.goto_target(
-                head=head, antennas=antennas, duration=duration, body_yaw=body_yaw
+                head=head,
+                left_arm=left_arm,
+                right_arm=right_arm,
+                duration=duration,
+                body_yaw=body_yaw,
             )
             send_response({"status": "ok", "command": "goto_target", "completed": True})
         except Exception as e:

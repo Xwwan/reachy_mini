@@ -1,0 +1,8 @@
+﻿name: reach-mini-latest
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+variables:
+  PYTHONNOUSERSITE: '1'
+prefix: C:\Users\Lian Wangwang\.conda\envs\reach-mini-latest
