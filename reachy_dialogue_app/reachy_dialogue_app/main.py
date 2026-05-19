@@ -1,8 +1,10 @@
 import argparse
 import base64
+import importlib.util
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,14 +23,19 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from reachy_mini import ReachyMini, ReachyMiniApp
-from reachy_mini.utils import create_head_pose
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - dependency is declared in pyproject.
+    yaml = None
 
 
 DEFAULT_SERVICE_URL = "http://127.0.0.1:12312"
 DEFAULT_CONVERSATION_ID = "reachy-mini-voice"
-DEFAULT_GESTURE = "shake_head"
 DEFAULT_EMOJI_SERVICE_URL = "http://127.0.0.1:8001"
+DEFAULT_BEHAVIOR_CONFIG_FILE = Path(__file__).resolve().parent / "behavior_config.yaml"
 DEFAULT_EMOJI_CONFIG_FILE = Path(__file__).resolve().parent / "emoji_config.json"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 DEFAULT_ROBOT_PORT = 8000
@@ -39,9 +46,10 @@ LIVE_CHUNK_BYTES = 5120
 
 @dataclass
 class RobotJob:
-    gesture: str
     audio_base64: str | None = None
     audio_sample_rate: int = OUTPUT_SAMPLE_RATE
+    action_signal: str | None = None
+    action_config: dict[str, Any] | None = None
     done_event: threading.Event | None = None
 
 
@@ -72,12 +80,22 @@ class LiveTranscript:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class BehaviorTag:
+    module: str
+    tag_name: str
+    key: str
+    raw: str
+
+
 @dataclass
-class EmojiTriggerResult:
+class BehaviorTriggerResult:
     matched: bool
-    signal: str | None = None
-    emotion: str | None = None
+    module: str | None = None
+    tag_name: str | None = None
+    key: str | None = None
     url: str | None = None
+    triggered: bool = False
     ok: bool = False
     status_code: int | None = None
     error: str | None = None
@@ -86,7 +104,6 @@ class EmojiTriggerResult:
 class SettingsPayload(BaseModel):
     service_url: str | None = None
     conversation_id: str | None = None
-    gesture: str | None = None
     tts_sample_rate: int | None = None
 
 
@@ -764,7 +781,6 @@ class ReachyDialogueApp(ReachyMiniApp):
             "conversation_id": os.environ.get(
                 "REACHY_DIALOGUE_CONVERSATION_ID", DEFAULT_CONVERSATION_ID
             ),
-            "gesture": os.environ.get("REACHY_DIALOGUE_GESTURE", DEFAULT_GESTURE),
             "tts_sample_rate": int(
                 os.environ.get("REACHY_DIALOGUE_TTS_SAMPLE_RATE", OUTPUT_SAMPLE_RATE)
             ),
@@ -772,12 +788,12 @@ class ReachyDialogueApp(ReachyMiniApp):
         jobs: queue.Queue[RobotJob] = queue.Queue()
         recorder = RobotMicRecorder(reachy_mini)
         playback_tester = RobotMicPlaybackTester(reachy_mini)
-        emoji_config = _load_emoji_trigger_config()
+        behavior_config = _load_behavior_config()
         _register_local_mic_routes(
             self.settings_app,
             settings,
             settings_lock,
-            emoji_config=emoji_config,
+            behavior_config=behavior_config,
         )
 
         @self.settings_app.get("/api/settings")
@@ -787,7 +803,11 @@ class ReachyDialogueApp(ReachyMiniApp):
 
         @self.settings_app.get("/api/emoji-config")
         def get_emoji_config() -> dict[str, Any]:
-            return _public_emoji_config(emoji_config)
+            return _public_emoji_config(behavior_config)
+
+        @self.settings_app.get("/api/behavior-config")
+        def get_behavior_config() -> dict[str, Any]:
+            return _public_behavior_config(behavior_config)
 
         @self.settings_app.post("/api/settings")
         def update_settings(payload: SettingsPayload) -> dict[str, Any]:
@@ -798,8 +818,6 @@ class ReachyDialogueApp(ReachyMiniApp):
                     )
                 if payload.conversation_id is not None:
                     settings["conversation_id"] = payload.conversation_id.strip()
-                if payload.gesture is not None:
-                    settings["gesture"] = payload.gesture
                 if payload.tts_sample_rate is not None:
                     settings["tts_sample_rate"] = payload.tts_sample_rate
                 return dict(settings)
@@ -846,17 +864,24 @@ class ReachyDialogueApp(ReachyMiniApp):
             )
             data = _json_or_error(response)
             if response.ok:
-                emoji_result = _trigger_emoji_from_text(
+                behavior_results = _trigger_behaviors_from_text(
                     str(data.get("reply") or ""),
-                    emoji_config,
+                    behavior_config,
                 )
-                if emoji_result.matched:
-                    data["emoji_trigger"] = _emoji_result_payload(emoji_result)
+                if behavior_results:
+                    data["behavior_triggers"] = [
+                        _behavior_result_payload(result) for result in behavior_results
+                    ]
+                    emoji_result = _first_module_result(behavior_results, "emoji")
+                    if emoji_result is not None:
+                        data["emoji_trigger"] = _emoji_result_payload(emoji_result)
+                action_signal = _first_ok_module_key(behavior_results, "action")
                 jobs.put(
                     RobotJob(
-                        gesture=current["gesture"],
                         audio_base64=data.get("audio_base64"),
                         audio_sample_rate=int(current["tts_sample_rate"]),
+                        action_signal=action_signal,
+                        action_config=_module_config(behavior_config, "action"),
                     )
                 )
             return data
@@ -895,7 +920,6 @@ class ReachyDialogueApp(ReachyMiniApp):
             if final_response:
                 jobs.put(
                     RobotJob(
-                        gesture=current["gesture"],
                         audio_base64=final_response.get("audio_base64"),
                         audio_sample_rate=int(current["tts_sample_rate"]),
                     )
@@ -969,15 +993,19 @@ class ReachyDialogueApp(ReachyMiniApp):
                                 is_final=True,
                                 error=None,
                             )
-                            emoji_result = _trigger_emoji_from_text(
+                            behavior_results = _trigger_behaviors_from_text(
                                 str(data.get("reply") or ""),
-                                emoji_config,
+                                behavior_config,
                             )
-                            if emoji_result.matched:
+                            for result in behavior_results:
                                 yield _sse_frame(
-                                    "emoji",
-                                    _emoji_result_payload(emoji_result),
+                                    "behavior",
+                                    _behavior_result_payload(result),
                                 )
+                            action_signal = _first_ok_module_key(
+                                behavior_results,
+                                "action",
+                            )
                             audio_base64 = data.get("audio_base64")
                             if not audio_base64 and audio_chunks:
                                 audio_base64 = base64.b64encode(
@@ -986,9 +1014,13 @@ class ReachyDialogueApp(ReachyMiniApp):
                             playback_done = threading.Event()
                             jobs.put(
                                 RobotJob(
-                                    gesture=current["gesture"],
                                     audio_base64=audio_base64,
                                     audio_sample_rate=audio_sample_rate,
+                                    action_signal=action_signal,
+                                    action_config=_module_config(
+                                        behavior_config,
+                                        "action",
+                                    ),
                                     done_event=playback_done,
                                 )
                             )
@@ -1065,7 +1097,6 @@ class ReachyDialogueApp(ReachyMiniApp):
             playback_done = threading.Event()
             jobs.put(
                 RobotJob(
-                    gesture="none",
                     audio_base64=recording.audio_base64,
                     audio_sample_rate=recording.sample_rate,
                     done_event=playback_done,
@@ -1123,7 +1154,6 @@ def _default_settings() -> dict[str, Any]:
         "conversation_id": os.environ.get(
             "REACHY_DIALOGUE_CONVERSATION_ID", DEFAULT_CONVERSATION_ID
         ),
-        "gesture": os.environ.get("REACHY_DIALOGUE_GESTURE", DEFAULT_GESTURE),
         "tts_sample_rate": int(
             os.environ.get("REACHY_DIALOGUE_TTS_SAMPLE_RATE", OUTPUT_SAMPLE_RATE)
         ),
@@ -1147,8 +1177,6 @@ def _register_settings_routes(
                 settings["service_url"] = _normalize_service_url(payload.service_url)
             if payload.conversation_id is not None:
                 settings["conversation_id"] = payload.conversation_id.strip()
-            if payload.gesture is not None:
-                settings["gesture"] = payload.gesture
             if payload.tts_sample_rate is not None:
                 settings["tts_sample_rate"] = payload.tts_sample_rate
             return dict(settings)
@@ -1179,7 +1207,7 @@ def _register_local_mic_routes(
     settings: dict[str, Any],
     settings_lock: threading.Lock,
     *,
-    emoji_config: dict[str, Any] | None = None,
+    behavior_config: dict[str, Any] | None = None,
 ) -> None:
     @app.post("/api/local-mic/start")
     def local_mic_start() -> dict[str, Any]:
@@ -1253,14 +1281,14 @@ def _register_local_mic_routes(
                     event = str(item.get("event") or "message")
                     data = item.get("data") or {}
                     if event == "done":
-                        emoji_result = _trigger_emoji_from_text(
+                        behavior_results = _trigger_behaviors_from_text(
                             str(data.get("reply") or ""),
-                            emoji_config,
+                            behavior_config,
                         )
-                        if emoji_result.matched:
+                        for result in behavior_results:
                             yield _sse_frame(
-                                "emoji",
-                                _emoji_result_payload(emoji_result),
+                                "behavior",
+                                _behavior_result_payload(result),
                             )
                     yield _sse_frame(
                         event,
@@ -1291,7 +1319,8 @@ def _build_web_only_app() -> FastAPI:
     app = FastAPI()
     settings_lock = threading.Lock()
     settings = _default_settings()
-    emoji_config = _load_emoji_trigger_config()
+    behavior_config = _load_behavior_config()
+    _disable_behavior_module(behavior_config, "action")
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -1300,11 +1329,20 @@ def _build_web_only_app() -> FastAPI:
         return FileResponse(static_dir / "local-mic-test.html")
 
     _register_settings_routes(app, settings, settings_lock)
-    _register_local_mic_routes(app, settings, settings_lock, emoji_config=emoji_config)
+    _register_local_mic_routes(
+        app,
+        settings,
+        settings_lock,
+        behavior_config=behavior_config,
+    )
 
     @app.get("/api/emoji-config")
     def get_emoji_config() -> dict[str, Any]:
-        return _public_emoji_config(emoji_config)
+        return _public_emoji_config(behavior_config)
+
+    @app.get("/api/behavior-config")
+    def get_behavior_config() -> dict[str, Any]:
+        return _public_behavior_config(behavior_config)
 
     return app
 
@@ -1315,129 +1353,464 @@ def run_web_only(host: str, port: int) -> None:
     uvicorn.run(_build_web_only_app(), host=host, port=port)
 
 
-def _load_emoji_trigger_config() -> dict[str, Any]:
-    config: dict[str, Any] = {
+TAG_PATTERN = re.compile(r"\[([^:\]\r\n]+):([^\]\r\n]+)\]")
+
+
+def _default_behavior_config() -> dict[str, Any]:
+    return {
         "enabled": True,
-        "service_url": DEFAULT_EMOJI_SERVICE_URL,
-        "request_timeout_seconds": 1.5,
-        "signal_map": {},
-        "available_emotions": [],
+        "modules": {
+            "emoji": {
+                "enabled": True,
+                "tag_names": ["emo", "emotion", "表情"],
+                "service_url": DEFAULT_EMOJI_SERVICE_URL,
+                "request_timeout_seconds": 1.5,
+                "method": "GET",
+                "endpoint_template": "/{key}",
+                "triggers": [
+                    "😀",
+                    "😄",
+                    "😁",
+                    "angry",
+                    "sad",
+                    "scared",
+                    "fear",
+                    "excited",
+                    "idle",
+                    "smug",
+                    "surprised",
+                    "surprise",
+                    "😧",
+                    "开心",
+                    "难过",
+                ],
+            },
+            "action": {
+                "enabled": True,
+                "tag_names": ["act", "action", "动作"],
+                "trigger_mode": "function",
+                "config_path": "../../action_call/config.json",
+                "library_dir": "../../action_call/library",
+                "sound": False,
+                "final_home_check": True,
+                "home_tolerance_deg": 5.0,
+                "reset_duration": 1.5,
+                "reset_attempts": 2,
+                "triggers": "*",
+            },
+        },
     }
-    config_path = Path(
-        os.environ.get("REACHY_DIALOGUE_EMOJI_CONFIG", DEFAULT_EMOJI_CONFIG_FILE)
-    )
+
+
+def _load_behavior_config() -> dict[str, Any]:
+    config = _default_behavior_config()
+    config_path = _resolve_behavior_config_path()
     try:
-        with config_path.open("r", encoding="utf-8") as config_file:
-            loaded = json.load(config_file)
+        loaded = _load_structured_config(config_path)
         if isinstance(loaded, dict):
-            config.update(loaded)
+            _merge_behavior_config(config, loaded)
     except FileNotFoundError:
         pass
     except Exception as exc:
-        print(f"Failed to load emoji config {config_path}: {exc}")
+        print(f"Failed to load behavior config {config_path}: {exc}")
 
-    service_url = (
-        os.environ.get("REACHY_DIALOGUE_EMOJI_SERVICE_URL")
-        or os.environ.get("REACHY_EMOJI_SERVICE_URL")
-        or str(config.get("service_url") or DEFAULT_EMOJI_SERVICE_URL)
-    )
-    config["service_url"] = service_url.rstrip("/")
-
-    enabled_override = os.environ.get("REACHY_DIALOGUE_EMOJI_ENABLED")
+    enabled_override = os.environ.get("REACHY_DIALOGUE_BEHAVIOR_ENABLED")
     if enabled_override is not None:
-        config["enabled"] = enabled_override.lower() in {"1", "true", "yes", "on"}
+        config["enabled"] = _env_flag(enabled_override)
     else:
         config["enabled"] = bool(config.get("enabled", True))
 
-    signal_map = config.get("signal_map")
-    if not isinstance(signal_map, dict):
-        signal_map = {}
-    config["signal_map"] = {
-        str(signal): str(emotion)
-        for signal, emotion in signal_map.items()
-        if str(signal)
-    }
+    emoji_enabled = os.environ.get("REACHY_DIALOGUE_EMOJI_ENABLED")
+    if emoji_enabled is not None:
+        config["modules"]["emoji"]["enabled"] = _env_flag(emoji_enabled)
 
-    available_emotions = config.get("available_emotions")
-    if not isinstance(available_emotions, list):
-        available_emotions = sorted(set(config["signal_map"].values()))
-    config["available_emotions"] = [str(emotion) for emotion in available_emotions]
+    emoji_url = (
+        os.environ.get("REACHY_DIALOGUE_EMOJI_SERVICE_URL")
+        or os.environ.get("REACHY_EMOJI_SERVICE_URL")
+    )
+    if emoji_url:
+        config["modules"]["emoji"]["service_url"] = emoji_url
 
-    try:
-        config["request_timeout_seconds"] = float(
-            config.get("request_timeout_seconds", 1.5)
-        )
-    except (TypeError, ValueError):
-        config["request_timeout_seconds"] = 1.5
+    _normalize_behavior_config(config, base_dir=config_path.parent)
     return config
 
 
+def _resolve_behavior_config_path() -> Path:
+    explicit = (
+        os.environ.get("REACHY_DIALOGUE_BEHAVIOR_CONFIG")
+        or os.environ.get("REACHY_DIALOGUE_EMOJI_CONFIG")
+    )
+    if explicit:
+        return Path(explicit).expanduser()
+    if DEFAULT_BEHAVIOR_CONFIG_FILE.exists():
+        return DEFAULT_BEHAVIOR_CONFIG_FILE
+    return DEFAULT_EMOJI_CONFIG_FILE
+
+
+def _load_structured_config(config_path: Path) -> dict[str, Any]:
+    with config_path.open("r", encoding="utf-8") as config_file:
+        if config_path.suffix.lower() in {".yaml", ".yml"}:
+            if yaml is None:
+                raise RuntimeError("PyYAML is required to load YAML config files")
+            loaded = yaml.safe_load(config_file) or {}
+        else:
+            loaded = json.load(config_file)
+    if isinstance(loaded, dict):
+        return loaded
+    return {}
+
+
+def _merge_behavior_config(config: dict[str, Any], loaded: dict[str, Any]) -> None:
+    if "modules" in loaded and isinstance(loaded.get("modules"), dict):
+        if "enabled" in loaded:
+            config["enabled"] = loaded["enabled"]
+        for module_name, module_config in loaded["modules"].items():
+            if not isinstance(module_config, dict):
+                continue
+            current = config["modules"].setdefault(str(module_name), {})
+            current.update(module_config)
+        return
+
+    # Legacy emoji_config.json support: use signal_map keys as emoji triggers.
+    emoji_module = config["modules"]["emoji"]
+    if "enabled" in loaded:
+        config["enabled"] = loaded["enabled"]
+        emoji_module["enabled"] = loaded["enabled"]
+    for key in ("service_url", "request_timeout_seconds"):
+        if key in loaded:
+            emoji_module[key] = loaded[key]
+    signal_map = loaded.get("signal_map")
+    if isinstance(signal_map, dict):
+        emoji_module["triggers"] = list(signal_map.keys())
+
+
+def _normalize_behavior_config(config: dict[str, Any], *, base_dir: Path) -> None:
+    modules = config.get("modules")
+    if not isinstance(modules, dict):
+        modules = {}
+    config["modules"] = modules
+    for module_name, module_config in list(modules.items()):
+        if not isinstance(module_config, dict):
+            modules.pop(module_name)
+            continue
+        module_config["enabled"] = bool(module_config.get("enabled", True))
+        module_config["tag_names"] = _normalize_string_list(
+            module_config.get("tag_names")
+        )
+        if not module_config["tag_names"]:
+            module_config["tag_names"] = [str(module_name)]
+        module_config["service_url"] = str(
+            module_config.get("service_url") or ""
+        ).rstrip("/")
+        module_config["method"] = str(module_config.get("method") or "GET").upper()
+        module_config["trigger_mode"] = str(
+            module_config.get("trigger_mode") or "http"
+        ).lower()
+        module_config["endpoint_template"] = str(
+            module_config.get("endpoint_template") or "/{key}"
+        )
+        module_config["triggers"] = _normalize_triggers(
+            module_config.get("triggers")
+        )
+        try:
+            module_config["request_timeout_seconds"] = float(
+                module_config.get("request_timeout_seconds", 3.0)
+            )
+        except (TypeError, ValueError):
+            module_config["request_timeout_seconds"] = 3.0
+        for key in ("config_path", "library_dir"):
+            if key in module_config:
+                module_config[key] = str(_resolve_behavior_path(module_config[key], base_dir))
+
+
+def _resolve_behavior_path(value: Any, base_dir: Path) -> Path:
+    path = Path(str(value)).expanduser()
+    if path.is_absolute():
+        return path
+    return (base_dir / path).resolve()
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _normalize_triggers(value: Any) -> str | list[str]:
+    if value == "*":
+        return "*"
+    return _normalize_string_list(value)
+
+
+def _env_flag(value: str) -> bool:
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _public_behavior_config(config: dict[str, Any]) -> dict[str, Any]:
+    public_modules: dict[str, Any] = {}
+    for module_name, module_config in (config.get("modules") or {}).items():
+        if not isinstance(module_config, dict):
+            continue
+        public_modules[str(module_name)] = {
+            "enabled": bool(module_config.get("enabled")),
+            "tag_names": list(module_config.get("tag_names") or []),
+            "trigger_mode": module_config.get("trigger_mode"),
+            "service_url": module_config.get("service_url"),
+            "method": module_config.get("method"),
+            "endpoint_template": module_config.get("endpoint_template"),
+            "config_path": module_config.get("config_path"),
+            "library_dir": module_config.get("library_dir"),
+            "triggers": module_config.get("triggers"),
+        }
+    return {"enabled": bool(config.get("enabled")), "modules": public_modules}
+
+
 def _public_emoji_config(config: dict[str, Any]) -> dict[str, Any]:
+    emoji_module = (config.get("modules") or {}).get("emoji") or {}
+    triggers = emoji_module.get("triggers")
+    signal_map = {}
+    if isinstance(triggers, list):
+        signal_map = {trigger: trigger for trigger in triggers}
     return {
-        "enabled": bool(config.get("enabled")),
-        "service_url": config.get("service_url"),
-        "signal_map": dict(config.get("signal_map") or {}),
-        "available_emotions": list(config.get("available_emotions") or []),
+        "enabled": bool(config.get("enabled") and emoji_module.get("enabled", True)),
+        "service_url": emoji_module.get("service_url"),
+        "signal_map": signal_map,
+        "available_emotions": [],
+        "tag_names": list(emoji_module.get("tag_names") or []),
+        "triggers": triggers,
     }
 
 
-def _trigger_emoji_from_text(
+def _trigger_behaviors_from_text(
     text: str,
     config: dict[str, Any] | None,
-) -> EmojiTriggerResult:
+) -> list[BehaviorTriggerResult]:
     if not config or not config.get("enabled", True):
-        return EmojiTriggerResult(matched=False)
+        return []
 
-    signal_map = config.get("signal_map")
-    if not isinstance(signal_map, dict):
-        return EmojiTriggerResult(matched=False)
+    return [
+        _trigger_behavior_tag(tag, config)
+        for tag in _extract_behavior_tags(text, config)
+    ]
 
-    signal = _find_emoji_signal(text, signal_map)
-    if signal is None:
-        return EmojiTriggerResult(matched=False)
 
-    emotion = str(signal_map.get(signal) or "")
-    service_url = str(config.get("service_url") or DEFAULT_EMOJI_SERVICE_URL).rstrip("/")
-    url = f"{service_url}/{quote(signal, safe='')}"
-    try:
-        response = requests.get(
-            url,
-            timeout=float(config.get("request_timeout_seconds") or 1.5),
+def _extract_behavior_tags(
+    text: str,
+    config: dict[str, Any] | None,
+) -> list[BehaviorTag]:
+    if not text or not config:
+        return []
+    tag_to_module: dict[str, str] = {}
+    modules = config.get("modules") or {}
+    for module_name, module_config in modules.items():
+        if not isinstance(module_config, dict) or not module_config.get("enabled", True):
+            continue
+        for tag_name in module_config.get("tag_names") or []:
+            tag_to_module.setdefault(str(tag_name).casefold(), str(module_name))
+
+    tags: list[BehaviorTag] = []
+    for match in TAG_PATTERN.finditer(text):
+        tag_name = match.group(1).strip()
+        key = match.group(2).strip()
+        if not tag_name or not key:
+            continue
+        module = tag_to_module.get(tag_name.casefold())
+        if module is None:
+            continue
+        tags.append(
+            BehaviorTag(
+                module=module,
+                tag_name=tag_name,
+                key=key,
+                raw=match.group(0),
+            )
         )
-        return EmojiTriggerResult(
+    return tags
+
+
+def _trigger_behavior_tag(
+    tag: BehaviorTag,
+    config: dict[str, Any],
+) -> BehaviorTriggerResult:
+    module_config = (config.get("modules") or {}).get(tag.module)
+    if not isinstance(module_config, dict) or not module_config.get("enabled", True):
+        return BehaviorTriggerResult(
             matched=True,
-            signal=signal,
-            emotion=emotion,
+            module=tag.module,
+            tag_name=tag.tag_name,
+            key=tag.key,
+            error="Module disabled",
+        )
+    if not _trigger_allowed(tag.key, module_config.get("triggers")):
+        return BehaviorTriggerResult(
+            matched=True,
+            module=tag.module,
+            tag_name=tag.tag_name,
+            key=tag.key,
+            error="Trigger key not configured",
+        )
+
+    if module_config.get("trigger_mode") == "function":
+        return BehaviorTriggerResult(
+            matched=True,
+            module=tag.module,
+            tag_name=tag.tag_name,
+            key=tag.key,
+            triggered=True,
+            ok=True,
+        )
+
+    service_url = str(module_config.get("service_url") or "").rstrip("/")
+    if not service_url:
+        return BehaviorTriggerResult(
+            matched=True,
+            module=tag.module,
+            tag_name=tag.tag_name,
+            key=tag.key,
+            error="Missing service_url",
+        )
+
+    endpoint = _render_endpoint(module_config, tag)
+    url = _join_service_url(service_url, endpoint)
+    method = str(module_config.get("method") or "GET").upper()
+    timeout = float(module_config.get("request_timeout_seconds") or 3.0)
+    try:
+        if method == "POST":
+            response = requests.post(
+                url,
+                json=_render_json_body(module_config, tag),
+                timeout=timeout,
+            )
+        else:
+            response = requests.get(url, timeout=timeout)
+        return BehaviorTriggerResult(
+            matched=True,
+            module=tag.module,
+            tag_name=tag.tag_name,
+            key=tag.key,
             url=url,
+            triggered=True,
             ok=response.ok,
             status_code=response.status_code,
             error=None if response.ok else response.text[:300],
         )
     except requests.RequestException as exc:
-        return EmojiTriggerResult(
+        return BehaviorTriggerResult(
             matched=True,
-            signal=signal,
-            emotion=emotion,
+            module=tag.module,
+            tag_name=tag.tag_name,
+            key=tag.key,
             url=url,
+            triggered=True,
             ok=False,
             error=str(exc),
         )
 
 
-def _find_emoji_signal(text: str, signal_map: dict[str, str]) -> str | None:
-    if not text:
-        return None
-    for signal in sorted(signal_map, key=len, reverse=True):
-        if signal and signal in text:
-            return signal
+def _trigger_allowed(key: str, triggers: Any) -> bool:
+    if triggers == "*":
+        return True
+    if isinstance(triggers, list):
+        return key in triggers
+    return False
+
+
+def _render_endpoint(module_config: dict[str, Any], tag: BehaviorTag) -> str:
+    template = str(module_config.get("endpoint_template") or "/{key}")
+    return _render_template(template, tag, quote_key=True)
+
+
+def _render_json_body(module_config: dict[str, Any], tag: BehaviorTag) -> Any:
+    body = module_config.get("json_body")
+    if body is None:
+        body = {"key": "{key}"}
+    return _render_template(body, tag, quote_key=False)
+
+
+def _render_template(value: Any, tag: BehaviorTag, *, quote_key: bool) -> Any:
+    replacements = {
+        "module": tag.module,
+        "tag": tag.tag_name,
+        "key": quote(tag.key, safe="") if quote_key else tag.key,
+        "raw": quote(tag.raw, safe="") if quote_key else tag.raw,
+    }
+    if isinstance(value, str):
+        rendered = value
+        for name, replacement in replacements.items():
+            rendered = rendered.replace("{" + name + "}", replacement)
+        return rendered
+    if isinstance(value, list):
+        return [_render_template(item, tag, quote_key=quote_key) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _render_template(item, tag, quote_key=quote_key)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _join_service_url(service_url: str, endpoint: str) -> str:
+    if not endpoint:
+        endpoint = "/"
+    if not endpoint.startswith("/"):
+        endpoint = "/" + endpoint
+    return service_url.rstrip("/") + endpoint
+
+
+def _first_module_result(
+    results: list[BehaviorTriggerResult],
+    module: str,
+) -> BehaviorTriggerResult | None:
+    for result in results:
+        if result.module == module:
+            return result
     return None
 
 
-def _emoji_result_payload(result: EmojiTriggerResult) -> dict[str, Any]:
+def _first_ok_module_key(
+    results: list[BehaviorTriggerResult],
+    module: str,
+) -> str | None:
+    result = _first_module_result(results, module)
+    if result is None or not result.ok:
+        return None
+    return result.key
+
+
+def _module_config(config: dict[str, Any], module: str) -> dict[str, Any] | None:
+    module_config = (config.get("modules") or {}).get(module)
+    if isinstance(module_config, dict):
+        return dict(module_config)
+    return None
+
+
+def _disable_behavior_module(config: dict[str, Any], module: str) -> None:
+    module_config = (config.get("modules") or {}).get(module)
+    if isinstance(module_config, dict):
+        module_config["enabled"] = False
+
+
+def _behavior_result_payload(result: BehaviorTriggerResult) -> dict[str, Any]:
     return {
         "matched": result.matched,
-        "signal": result.signal,
-        "emotion": result.emotion,
+        "module": result.module,
+        "tag": result.tag_name,
+        "key": result.key,
+        "url": result.url,
+        "triggered": result.triggered,
+        "ok": result.ok,
+        "status_code": result.status_code,
+        "error": result.error,
+    }
+
+
+def _emoji_result_payload(result: BehaviorTriggerResult) -> dict[str, Any]:
+    return {
+        "matched": result.matched,
+        "signal": result.key,
+        "emotion": result.key,
         "url": result.url,
         "ok": result.ok,
         "status_code": result.status_code,
@@ -1525,7 +1898,8 @@ def _handle_robot_job(reachy_mini: ReachyMini, job: RobotJob) -> None:
         started_at = time.monotonic()
         if wav_path is not None:
             reachy_mini.media.play_sound(wav_path)
-        _run_gesture(reachy_mini, job.gesture)
+        if job.action_signal:
+            _play_action_signal(reachy_mini, job.action_signal, job.action_config)
         if playback_seconds > 0:
             elapsed = time.monotonic() - started_at
             time.sleep(max(0.3, playback_seconds - elapsed + 0.3))
@@ -1537,6 +1911,43 @@ def _handle_robot_job(reachy_mini: ReachyMini, job: RobotJob) -> None:
                 os.unlink(wav_path)
             except OSError:
                 pass
+
+
+def _play_action_signal(
+    reachy_mini: ReachyMini,
+    signal: str,
+    action_config: dict[str, Any] | None,
+) -> None:
+    module = _load_action_call_module()
+    config = action_config or {}
+    module.play_signal_on_reachy(
+        reachy_mini,
+        signal,
+        config_path=Path(
+            config.get("config_path") or REPO_ROOT / "action_call" / "config.json"
+        ),
+        library_dir=Path(
+            config.get("library_dir") or REPO_ROOT / "action_call" / "library"
+        ),
+        sound=bool(config.get("sound", False)),
+        final_home_check=bool(config.get("final_home_check", True)),
+        home_tolerance_deg=float(config.get("home_tolerance_deg", 5.0)),
+        reset_duration=float(config.get("reset_duration", 1.5)),
+        reset_attempts=int(config.get("reset_attempts", 2)),
+    )
+
+
+def _load_action_call_module() -> Any:
+    module_path = REPO_ROOT / "action_call" / "play_emotion_action.py"
+    spec = importlib.util.spec_from_file_location(
+        "reachy_dialogue_action_call",
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load action_call module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _write_pcm_wav(audio_bytes: bytes, sample_rate: int) -> str:
@@ -1552,37 +1963,6 @@ def _write_pcm_wav(audio_bytes: bytes, sample_rate: int) -> str:
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(audio_bytes)
     return path
-
-
-def _run_gesture(reachy_mini: ReachyMini, gesture: str) -> None:
-    if gesture == "none":
-        return
-    if gesture == "antenna_wave":
-        _antenna_wave(reachy_mini)
-        return
-    _shake_head(reachy_mini)
-
-
-def _shake_head(reachy_mini: ReachyMini) -> None:
-    poses = [
-        create_head_pose(yaw=-18, degrees=True),
-        create_head_pose(yaw=18, degrees=True),
-        create_head_pose(yaw=-14, degrees=True),
-        create_head_pose(yaw=0, degrees=True),
-    ]
-    for pose in poses:
-        reachy_mini.goto_target(head=pose, duration=0.35)
-        time.sleep(0.35)
-
-
-def _antenna_wave(reachy_mini: ReachyMini) -> None:
-    for value in (25, -25, 20, 0):
-        reachy_mini.goto_target(
-            antennas=np.deg2rad(np.array([value, -value])),
-            duration=0.25,
-            body_yaw=None,
-        )
-        time.sleep(0.25)
 
 
 def parse_args() -> argparse.Namespace:

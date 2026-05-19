@@ -53,6 +53,7 @@
 - 已实现语音聊天桥接页面，默认对话服务地址为 `http://127.0.0.1:12312`。
 - 已实现 `/api/voice-chat` 转发到外部对话系统 `/voice/chat`。
 - 已实现 TTS PCM 转临时 WAV，并通过 Reachy Mini 媒体接口播放。
-- 已实现默认摇头动作，可在页面改为天线摆动或不动作。
+- 已移除 dialogue app 的默认摇头/天线动作；动作由 `[act:...]` 等行为标签触发，并复用当前 ReachyMini 连接调用 `action_call` 函数。
 - 临时加入机器人麦克风回放测试：页面可单独录制机器人麦克风音频，停止后不经过对话服务，直接用机器人扬声器播放，用于检查麦克风输入和扬声器输出。
-- 加入 Reachy Emoji 联动：dialogue app 维护 `emoji_config.json` 表示可用表情和 `signal_map`；当回复中出现配置 key 时，通过 URL 请求触发表情服务。
+- 加入 Reachy Emoji 联动：dialogue app 最初维护 `emoji_config.json` 表示可用表情和 `signal_map`；当回复中出现配置 key 时，通过 URL 请求触发表情服务。
+- 本次调整计划：把表情联动升级为通用行为标签联动。配置从 JSON 迁移到 `behavior_config.yaml`，由 YAML 声明模块、可识别 tag 名、触发 key 白名单或 `*`、触发方式。dialogue app 只解析模型回复里的 `[tag:key]`；表情继续通过 URL 触发，动作暂时直接调用 `action_call` 函数且不在 dialogue app 内做映射；前端继续显示原始 tag 文本，只额外展示触发状态。

@@ -23,9 +23,9 @@ tags:
 - 对话服务负责实时 STT、生成回复和 TTS；app 停止录音时优先通过流式接口接收 `transcript` / `delta` / `audio` / `done` 事件，不再把整段音频发到 `/voice/chat` 做二次识别。
 - 流式 TTS 会以多个 `audio` 事件返回 24kHz、16-bit、mono PCM chunk；app 会收集这些 chunk，合并后写成临时 WAV 并通过 `reachy_mini.media.play_sound()` 让机器人播放。
 - 如果服务端没有流式 finish 接口，app 会回退到 `/voice/live/finish` 的非流式 JSON 响应并继续播放返回的 TTS PCM。
-- 每轮回复默认触发摇头动作，页面里可改成天线摆动或不动作。
+- Dialogue app 不直接控制机器人动作；它只从模型回复中解析行为标签并向表情/动作模块发送控制信号。
 - 页面里临时加入了“机器人麦克风回放测试”：录一段机器人麦克风输入，停止后不经过对话服务，直接从机器人扬声器播放原始录音，方便检查机器人麦克风和扬声器链路。
-- App 维护自己的 `reachy_dialogue_app/reachy_dialogue_app/emoji_config.json`，用于声明可用表情和 signal 映射；当模型回复里出现 `signal_map` 的 key（例如 `😀`、`angry`、`sad`）时，会请求 Reachy Emoji 服务的 URL 路径接口。
+- App 维护自己的 `reachy_dialogue_app/reachy_dialogue_app/behavior_config.yaml`，用于声明行为模块、可识别的 tag 名和触发 key；当模型回复里出现类似 `[emo:angry]`、`[act:开心]` 的标签时，会把 key 原样转发给对应模块。前端会保留原始标签显示。
 
 ## 启动顺序
 
@@ -43,12 +43,18 @@ cd /home/tzhx/wyl/reachy_mini/reachy_emoji
 /home/tzhx/miniconda3/bin/conda run -n test python main.py
 ```
 
-默认表情服务地址是 `http://127.0.0.1:8001`。例如模型回复中包含 `angry` 时，
+默认表情服务地址是 `http://127.0.0.1:8001`。例如模型回复中包含 `[emo:angry]` 时，
 dialogue app 会发出：
 
 ```text
 GET http://127.0.0.1:8001/angry
 ```
+
+动作当前使用本进程函数调用。模型回复中包含 `[act:开心]` 时，dialogue app 会把
+`开心` 作为 signal 传给 `action_call/play_emotion_action.py` 的可复用函数；具体映射由
+`action_call/config.json` 维护。
+
+动作会复用 dialogue app 当前的 ReachyMini 连接，不需要额外启动 `8002` 动作服务。
 
 然后启动 Reachy Mini app：
 
@@ -115,7 +121,6 @@ http://127.0.0.1:8042/static/local-mic-test.html
 ```bash
 export REACHY_DIALOGUE_SERVICE_URL=http://127.0.0.1:12312
 export REACHY_DIALOGUE_CONVERSATION_ID=reachy-mini-voice
-export REACHY_DIALOGUE_GESTURE=shake_head
 export REACHY_DIALOGUE_TTS_SAMPLE_RATE=24000
 export REACHY_ROBOT_HOST=127.0.0.1
 export REACHY_ROBOT_PORT=8000
@@ -124,7 +129,8 @@ export REACHY_USE_SIM=false
 export REACHY_DIALOGUE_WEB_ONLY=false
 export REACHY_DIALOGUE_WEB_HOST=127.0.0.1
 export REACHY_DIALOGUE_WEB_PORT=8042
+export REACHY_DIALOGUE_BEHAVIOR_CONFIG=/path/to/behavior_config.yaml
+export REACHY_DIALOGUE_BEHAVIOR_ENABLED=true
 export REACHY_DIALOGUE_EMOJI_ENABLED=true
 export REACHY_DIALOGUE_EMOJI_SERVICE_URL=http://127.0.0.1:8001
-export REACHY_DIALOGUE_EMOJI_CONFIG=/path/to/emoji_config.json
 ```

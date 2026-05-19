@@ -188,6 +188,10 @@ async function stopAndReply() {
             setStatus(`正在播放 TTS 音频 ${audioChunks}`);
             return;
         }
+        if (event.event === "behavior") {
+            setStatus(formatBehaviorStatus(event.data));
+            return;
+        }
         if (event.event === "emoji") {
             if (event.data.ok) {
                 setStatus(`已触发表情 ${event.data.emotion || event.data.signal}`);
@@ -234,6 +238,16 @@ function enqueuePcm(bytes) {
         sendQueue.push(pendingBytes.slice(0, CHUNK_BYTES));
         pendingBytes = pendingBytes.slice(CHUNK_BYTES);
     }
+}
+
+function formatBehaviorStatus(data) {
+    const moduleName = data.module || "behavior";
+    const key = data.key || data.signal || "";
+    if (data.ok) {
+        return `已触发 ${moduleName} ${key}`;
+    }
+    const reason = data.error || data.status_code || "未知错误";
+    return `${moduleName} ${key} 触发失败：${reason}`;
 }
 
 async function sendLoop() {

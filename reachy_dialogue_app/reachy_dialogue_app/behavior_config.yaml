@@ -1,0 +1,32 @@
+enabled: true
+
+modules:
+  emoji:
+    enabled: true
+    tag_names:
+      - emo
+    service_url: http://127.0.0.1:8001
+    request_timeout_seconds: 1.5
+    method: GET
+    endpoint_template: "/{key}"
+    triggers:
+      - excited
+      - smug
+      - angry
+      - scared
+      - sad
+      - idle
+
+  action:
+    enabled: true
+    tag_names:
+      - act
+    trigger_mode: function
+    config_path: ../../action_call/config.json
+    library_dir: ../../action_call/library
+    sound: false
+    final_home_check: true
+    home_tolerance_deg: 5.0
+    reset_duration: 1.5
+    reset_attempts: 2
+    triggers: "*"

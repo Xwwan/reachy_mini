@@ -166,6 +166,62 @@ def print_available_emotions(library_dir: Path, signal_map: dict[str, str]) -> N
     print("\nLegacy emotion aliases are still accepted: happy=cheerful, angry=furious, scared=fear.")
 
 
+def play_signal_on_reachy(
+    reachy: object,
+    signal: str,
+    *,
+    config_path: Path = CONFIG_PATH,
+    library_dir: Path = LIBRARY_DIR,
+    repeat: int = 1,
+    pause_between: float = 1.0,
+    initial_goto_duration: float = 1.0,
+    sound: bool = False,
+    final_home_check: bool = True,
+    home_tolerance_deg: float = 5.0,
+    reset_duration: float = 1.5,
+    reset_attempts: int = 2,
+) -> str:
+    """Play a mapped signal using an already-open Reachy Mini connection."""
+    from reachy_mini.motion.recorded_move import RecordedMoves
+
+    if repeat < 1:
+        raise ValueError("repeat must be >= 1")
+
+    config_path = config_path.resolve()
+    library_dir = library_dir.resolve()
+    signal_map = load_signal_map(config_path)
+    emotion = resolve_signal_to_emotion(signal, signal_map)
+    move_name, label_zh = EMOTION_ACTIONS[emotion]
+    move_path = library_dir / f"{move_name}.json"
+    if not move_path.exists():
+        raise FileNotFoundError(
+            f"Missing {move_path}. Run python .\\action_call\\build_action_library.py first."
+        )
+
+    recorded_moves = RecordedMoves(str(library_dir))
+    move = recorded_moves.get(move_name)
+    for index in range(repeat):
+        print(
+            f"Playing {signal!r} -> {emotion} / {label_zh} "
+            f"({move_name}), repeat {index + 1}/{repeat}."
+        )
+        reachy.play_move(
+            move,
+            initial_goto_duration=initial_goto_duration,
+            sound=sound,
+        )
+        if final_home_check:
+            ensure_arms_home(
+                reachy,
+                tolerance_deg=home_tolerance_deg,
+                reset_duration=reset_duration,
+                reset_attempts=reset_attempts,
+            )
+        if index < repeat - 1:
+            time.sleep(pause_between)
+    return emotion
+
+
 def play_emotion(args: argparse.Namespace) -> None:
     """Connect to the daemon and play one emotion."""
     from reachy_mini import ReachyMini

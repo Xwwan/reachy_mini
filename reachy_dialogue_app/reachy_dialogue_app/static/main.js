@@ -12,7 +12,6 @@ let isPlaybackTestRecording = false;
 const els = {
     serviceUrl: document.getElementById("service-url"),
     conversationId: document.getElementById("conversation-id"),
-    gesture: document.getElementById("gesture"),
     ttsSampleRate: document.getElementById("tts-sample-rate"),
     healthBtn: document.getElementById("health-btn"),
     recordBtn: document.getElementById("record-btn"),
@@ -38,7 +37,6 @@ async function loadSettings() {
     const settings = await response.json();
     els.serviceUrl.value = settings.service_url;
     els.conversationId.value = settings.conversation_id;
-    els.gesture.value = settings.gesture;
     els.ttsSampleRate.value = settings.tts_sample_rate;
 }
 
@@ -46,7 +44,6 @@ async function saveSettings() {
     const body = {
         service_url: els.serviceUrl.value,
         conversation_id: els.conversationId.value,
-        gesture: els.gesture.value,
         tts_sample_rate: Number(els.ttsSampleRate.value || 24000),
     };
     const response = await fetch("/api/settings", {
@@ -245,6 +242,10 @@ async function sendRecording() {
                 setStatus(`正在接收 TTS 音频 ${audioChunkCount}`);
                 return;
             }
+            if (event === "behavior") {
+                setStatus(formatBehaviorStatus(data));
+                return;
+            }
             if (event === "emoji") {
                 if (data.ok) {
                     setStatus(`已触发表情 ${data.emotion || data.signal}`);
@@ -330,6 +331,16 @@ function renderMicLevel(level) {
     const normalized = clamp01(Number(level.level || 0));
     els.micLevelFill.style.width = `${Math.round(normalized * 100)}%`;
     els.micLevelText.textContent = `RMS ${formatLevel(level.rms)} · 峰值 ${formatLevel(level.peak)}`;
+}
+
+function formatBehaviorStatus(data) {
+    const moduleName = data.module || "behavior";
+    const key = data.key || data.signal || "";
+    if (data.ok) {
+        return `已触发 ${moduleName} ${key}`;
+    }
+    const reason = data.error || data.status_code || "未知错误";
+    return `${moduleName} ${key} 触发失败：${reason}`;
 }
 
 function renderPlaybackTestLevel(level) {
@@ -483,7 +494,7 @@ els.playbackTestBtn.addEventListener("click", () => {
     togglePlaybackTest().catch((error) => setStatus(error.message || String(error)));
 });
 
-for (const input of [els.serviceUrl, els.conversationId, els.gesture, els.ttsSampleRate]) {
+for (const input of [els.serviceUrl, els.conversationId, els.ttsSampleRate]) {
     input.addEventListener("change", () => {
         saveSettings().catch((error) => setStatus(error.message || String(error)));
     });
