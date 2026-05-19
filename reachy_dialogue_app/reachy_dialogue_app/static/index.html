@@ -36,6 +36,35 @@
             </label>
         </section>
 
+        <section class="volume-panel" aria-label="音量设置">
+            <div class="section-heading">
+                <span>音量</span>
+                <button id="refresh-volume-btn" class="secondary-action compact-action" type="button">刷新</button>
+            </div>
+            <div class="volume-grid">
+                <label class="range-control">
+                    <span>扬声器 <strong id="speaker-volume-value">--</strong></span>
+                    <input id="speaker-volume" type="range" min="0" max="100" step="1" value="50">
+                </label>
+                <label class="range-control">
+                    <span>麦克风 <strong id="microphone-volume-value">--</strong></span>
+                    <input id="microphone-volume" type="range" min="0" max="100" step="1" value="50">
+                </label>
+            </div>
+        </section>
+
+        <section class="text-panel" aria-label="手动文本聊天">
+            <div class="section-heading">
+                <span>手动输入</span>
+                <label class="inline-toggle">
+                    <input id="text-tts-enabled" type="checkbox" checked>
+                    <span>朗读</span>
+                </label>
+            </div>
+            <textarea id="manual-text" rows="3" placeholder="输入要对 Reachy 说的话"></textarea>
+            <button id="send-text-btn" type="button">发送文本</button>
+        </section>
+
         <section class="voice-panel" aria-label="语音聊天">
             <button id="record-btn" class="record-button" type="button">开始录音</button>
             <div id="recording-time">00:00</div>

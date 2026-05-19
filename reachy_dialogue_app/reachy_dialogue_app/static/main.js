@@ -8,11 +8,20 @@ let playbackTestStartedAt = 0;
 let playbackTestTimerId = null;
 let playbackTestLevelTimerId = null;
 let isPlaybackTestRecording = false;
+let isTextSending = false;
 
 const els = {
     serviceUrl: document.getElementById("service-url"),
     conversationId: document.getElementById("conversation-id"),
     ttsSampleRate: document.getElementById("tts-sample-rate"),
+    speakerVolume: document.getElementById("speaker-volume"),
+    speakerVolumeValue: document.getElementById("speaker-volume-value"),
+    microphoneVolume: document.getElementById("microphone-volume"),
+    microphoneVolumeValue: document.getElementById("microphone-volume-value"),
+    refreshVolumeBtn: document.getElementById("refresh-volume-btn"),
+    manualText: document.getElementById("manual-text"),
+    sendTextBtn: document.getElementById("send-text-btn"),
+    textTtsEnabled: document.getElementById("text-tts-enabled"),
     healthBtn: document.getElementById("health-btn"),
     recordBtn: document.getElementById("record-btn"),
     recordingTime: document.getElementById("recording-time"),
@@ -71,6 +80,49 @@ async function checkHealth() {
     }
 }
 
+async function loadVolumeControls() {
+    const response = await fetch("/api/audio-volume");
+    const result = await response.json();
+    if (!response.ok) {
+        throw new Error(result.detail || "读取音量失败");
+    }
+    renderVolume("speaker", result.speaker);
+    renderVolume("microphone", result.microphone);
+}
+
+async function setVolume(kind, value) {
+    const endpoint = kind === "speaker"
+        ? "/api/audio-volume/speaker"
+        : "/api/audio-volume/microphone";
+    const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ volume: Number(value) }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+        throw new Error(result.detail || "设置音量失败");
+    }
+    renderVolume(kind, result);
+    setStatus(kind === "speaker" ? "扬声器音量已更新" : "麦克风音量已更新");
+}
+
+function renderVolume(kind, payload) {
+    const volume = Number(payload?.volume);
+    const text = Number.isFinite(volume) ? `${volume}%` : "--";
+    if (kind === "speaker") {
+        if (Number.isFinite(volume)) {
+            els.speakerVolume.value = String(volume);
+        }
+        els.speakerVolumeValue.textContent = text;
+        return;
+    }
+    if (Number.isFinite(volume)) {
+        els.microphoneVolume.value = String(volume);
+    }
+    els.microphoneVolumeValue.textContent = text;
+}
+
 async function toggleRecording() {
     if (isRecording) {
         await stopRecording();
@@ -82,6 +134,9 @@ async function toggleRecording() {
 async function startRecording() {
     if (isPlaybackTestRecording) {
         throw new Error("请先停止机器人麦克风回放测试。");
+    }
+    if (isTextSending) {
+        throw new Error("请等当前文本回复结束后再录音。");
     }
     await saveSettings();
     lastRecordingStats = null;
@@ -120,6 +175,9 @@ async function togglePlaybackTest() {
 async function startPlaybackTest() {
     if (isRecording) {
         throw new Error("请先停止语音聊天录音。");
+    }
+    if (isTextSending) {
+        throw new Error("请等当前文本回复结束后再测试回放。");
     }
     const response = await fetch("/api/robot-mic/playback-test/start", { method: "POST" });
     const result = await response.json();
@@ -179,6 +237,58 @@ async function stopPlaybackTest() {
     }
 }
 
+async function sendManualText() {
+    if (isTextSending) {
+        return;
+    }
+    if (isRecording) {
+        throw new Error("请先停止语音聊天录音。");
+    }
+    if (isPlaybackTestRecording) {
+        throw new Error("请先停止机器人麦克风回放测试。");
+    }
+    await saveSettings();
+    const text = els.manualText.value.trim();
+    if (!text) {
+        throw new Error("请输入文本。");
+    }
+    isTextSending = true;
+    els.sendTextBtn.disabled = true;
+    els.recordBtn.disabled = true;
+    els.playbackTestBtn.disabled = true;
+    els.transcript.textContent = text;
+    els.reply.textContent = "";
+    renderRobotTranscript({ text, error: null });
+    setStatus("正在发送文本...");
+
+    try {
+        const response = await fetch("/api/text-chat-stream", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                text,
+                conversation_id: els.conversationId.value,
+                tts_enabled: els.textTtsEnabled.checked,
+            }),
+        });
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.detail || payload.error?.message || "文本发送失败");
+        }
+        await renderDialogueStream(response, {
+            waitingStatus: "正在生成文本回复...",
+            transcriptFallback: text,
+        });
+    } catch (error) {
+        setStatus(describeError(error));
+    } finally {
+        isTextSending = false;
+        els.sendTextBtn.disabled = false;
+        els.recordBtn.disabled = false;
+        els.playbackTestBtn.disabled = false;
+    }
+}
+
 async function stopRecording() {
     if (!isRecording) {
         return;
@@ -204,79 +314,20 @@ async function sendRecording() {
             throw new Error(payload.detail || payload.error?.message || "机器人麦克风录音失败");
         }
 
-        let reply = "";
-        let transcript = "";
-        let finalPayload = null;
-        let audioChunkCount = 0;
-        els.reply.textContent = "";
-        setStatus("正在生成回复...");
-
-        await readSseStream(response, ({ event, data }) => {
-            if (event === "recording") {
+        const streamState = await renderDialogueStream(response, {
+            waitingStatus: "正在生成回复...",
+            transcriptFallback: "(未识别到文本)",
+            onRecording: (data) => {
                 lastRecordingStats = data;
                 renderMicLevel(data);
-                return;
-            }
-            if (event === "debug") {
-                renderDebugInfo(data);
-                return;
-            }
-            if (event === "transcript") {
-                transcript = data.transcript || transcript;
-                renderRobotTranscript({ text: transcript, error: null });
-                els.transcript.textContent = transcript || "(未识别到文本)";
+            },
+            onDebug: renderDebugInfo,
+            onTranscript: () => {
                 setStatus("已识别语音，正在流式生成回复...");
-                return;
-            }
-            if (event === "meta") {
-                setStatus("已连接模型流");
-                return;
-            }
-            if (event === "delta") {
-                reply += data.delta || "";
-                els.reply.textContent = reply || " ";
-                return;
-            }
-            if (event === "audio") {
-                audioChunkCount += 1;
-                setStatus(`正在接收 TTS 音频 ${audioChunkCount}`);
-                return;
-            }
-            if (event === "behavior") {
-                setStatus(formatBehaviorStatus(data));
-                return;
-            }
-            if (event === "emoji") {
-                if (data.ok) {
-                    setStatus(`已触发表情 ${data.emotion || data.signal}`);
-                } else {
-                    setStatus(`表情触发失败：${data.error || data.status_code || "未知错误"}`);
-                }
-                return;
-            }
-            if (event === "done") {
-                finalPayload = data;
-                transcript = data.transcript || transcript;
-                reply = data.reply || reply;
-                els.transcript.textContent = transcript || "(未识别到文本)";
-                els.reply.textContent = reply || "(没有回复)";
-                setStatus(
-                    data.audio_base64 || audioChunkCount > 0
-                        ? "正在播放机器人回复..."
-                        : "流式回复完成",
-                );
-                return;
-            }
-            if (event === "playback_done") {
-                setStatus("机器人回复完成");
-                return;
-            }
-            if (event === "error") {
-                throw new Error(data.message || "流式回复失败");
-            }
+            },
         });
 
-        if (!finalPayload && !reply) {
+        if (!streamState.finalPayload && !streamState.reply) {
             els.reply.textContent = "(没有回复)";
         }
     } catch (error) {
@@ -286,6 +337,81 @@ async function sendRecording() {
         els.recordBtn.disabled = false;
         els.recordingTime.textContent = "00:00";
     }
+}
+
+async function renderDialogueStream(response, options = {}) {
+    let reply = "";
+    let transcript = "";
+    let finalPayload = null;
+    let audioChunkCount = 0;
+    els.reply.textContent = "";
+    setStatus(options.waitingStatus || "正在生成回复...");
+
+    await readSseStream(response, ({ event, data }) => {
+        if (event === "recording") {
+            options.onRecording?.(data);
+            return;
+        }
+        if (event === "debug") {
+            options.onDebug?.(data);
+            return;
+        }
+        if (event === "transcript") {
+            transcript = data.transcript || transcript || options.transcriptFallback || "";
+            renderRobotTranscript({ text: transcript, error: null });
+            els.transcript.textContent = transcript || "(未识别到文本)";
+            options.onTranscript?.(data);
+            return;
+        }
+        if (event === "meta") {
+            setStatus("已连接模型流");
+            return;
+        }
+        if (event === "delta") {
+            reply += data.delta || "";
+            els.reply.textContent = reply || " ";
+            return;
+        }
+        if (event === "audio") {
+            audioChunkCount += 1;
+            setStatus(`正在接收 TTS 音频 ${audioChunkCount}`);
+            return;
+        }
+        if (event === "behavior") {
+            setStatus(formatBehaviorStatus(data));
+            return;
+        }
+        if (event === "emoji") {
+            if (data.ok) {
+                setStatus(`已触发表情 ${data.emotion || data.signal}`);
+            } else {
+                setStatus(`表情触发失败：${data.error || data.status_code || "未知错误"}`);
+            }
+            return;
+        }
+        if (event === "done") {
+            finalPayload = data;
+            transcript = data.transcript || transcript || options.transcriptFallback || "";
+            reply = data.reply || reply;
+            els.transcript.textContent = transcript || "(未识别到文本)";
+            els.reply.textContent = reply || "(没有回复)";
+            setStatus(
+                data.audio_base64 || data.response_audio_base64 || audioChunkCount > 0
+                    ? "正在播放机器人回复..."
+                    : "流式回复完成",
+            );
+            return;
+        }
+        if (event === "playback_done") {
+            setStatus("机器人回复完成");
+            return;
+        }
+        if (event === "error") {
+            throw new Error(data.message || "流式回复失败");
+        }
+    });
+
+    return { reply, transcript, finalPayload, audioChunkCount };
 }
 
 function updateTimer() {
@@ -494,6 +620,39 @@ els.playbackTestBtn.addEventListener("click", () => {
     togglePlaybackTest().catch((error) => setStatus(error.message || String(error)));
 });
 
+els.sendTextBtn.addEventListener("click", () => {
+    sendManualText().catch((error) => setStatus(error.message || String(error)));
+});
+
+els.manualText.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        sendManualText().catch((error) => setStatus(error.message || String(error)));
+    }
+});
+
+els.refreshVolumeBtn.addEventListener("click", () => {
+    loadVolumeControls().catch((error) => setStatus(error.message || String(error)));
+});
+
+els.speakerVolume.addEventListener("input", () => {
+    els.speakerVolumeValue.textContent = `${els.speakerVolume.value}%`;
+});
+
+els.microphoneVolume.addEventListener("input", () => {
+    els.microphoneVolumeValue.textContent = `${els.microphoneVolume.value}%`;
+});
+
+els.speakerVolume.addEventListener("change", () => {
+    setVolume("speaker", els.speakerVolume.value)
+        .catch((error) => setStatus(error.message || String(error)));
+});
+
+els.microphoneVolume.addEventListener("change", () => {
+    setVolume("microphone", els.microphoneVolume.value)
+        .catch((error) => setStatus(error.message || String(error)));
+});
+
 for (const input of [els.serviceUrl, els.conversationId, els.ttsSampleRate]) {
     input.addEventListener("change", () => {
         saveSettings().catch((error) => setStatus(error.message || String(error)));
@@ -501,5 +660,8 @@ for (const input of [els.serviceUrl, els.conversationId, els.ttsSampleRate]) {
 }
 
 loadSettings()
-    .then(checkHealth)
+    .then(async () => {
+        await checkHealth();
+        await loadVolumeControls();
+    })
     .catch((error) => setStatus(error.message || String(error)));

@@ -23,6 +23,8 @@ tags:
 - 对话服务负责实时 STT、生成回复和 TTS；app 停止录音时优先通过流式接口接收 `transcript` / `delta` / `audio` / `done` 事件，不再把整段音频发到 `/voice/chat` 做二次识别。
 - 流式 TTS 会以多个 `audio` 事件返回 24kHz、16-bit、mono PCM chunk；app 会收集这些 chunk，合并后写成临时 WAV 并通过 `reachy_mini.media.play_sound()` 让机器人播放。
 - 如果服务端没有流式 finish 接口，app 会回退到 `/voice/live/finish` 的非流式 JSON 响应并继续播放返回的 TTS PCM。
+- 页面支持手动输入文本。文本会转发到对话服务的 `/chat`；app 优先使用 `text` 字段，如果服务返回常见字段校验错误，会自动用 `message` 字段重试。返回里如果包含 `audio_base64`、`response_audio_base64` 或 `tts_audio_base64`，会继续由机器人扬声器播放。
+- 页面支持调整扬声器和麦克风音量。滑杆通过 Reachy daemon 的 `/api/volume/current`、`/api/volume/set`、`/api/volume/microphone/current`、`/api/volume/microphone/set` 代理读写，取值范围是 0-100。
 - Dialogue app 不直接控制机器人动作；它只从模型回复中解析行为标签并向表情/动作模块发送控制信号。
 - 页面里临时加入了“机器人麦克风回放测试”：录一段机器人麦克风输入，停止后不经过对话服务，直接从机器人扬声器播放原始录音，方便检查机器人麦克风和扬声器链路。
 - App 维护自己的 `reachy_dialogue_app/reachy_dialogue_app/behavior_config.yaml`，用于声明行为模块、可识别的 tag 名和触发 key；当模型回复里出现类似 `[emo:angry]`、`[act:开心]` 的标签时，会把 key 原样转发给对应模块。前端会保留原始标签显示。

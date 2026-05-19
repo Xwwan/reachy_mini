@@ -57,3 +57,4 @@
 - 临时加入机器人麦克风回放测试：页面可单独录制机器人麦克风音频，停止后不经过对话服务，直接用机器人扬声器播放，用于检查麦克风输入和扬声器输出。
 - 加入 Reachy Emoji 联动：dialogue app 最初维护 `emoji_config.json` 表示可用表情和 `signal_map`；当回复中出现配置 key 时，通过 URL 请求触发表情服务。
 - 本次调整计划：把表情联动升级为通用行为标签联动。配置从 JSON 迁移到 `behavior_config.yaml`，由 YAML 声明模块、可识别 tag 名、触发 key 白名单或 `*`、触发方式。dialogue app 只解析模型回复里的 `[tag:key]`；表情继续通过 URL 触发，动作暂时直接调用 `action_call` 函数且不在 dialogue app 内做映射；前端继续显示原始 tag 文本，只额外展示触发状态。
+- 本次调整计划：增加手动文本输入入口，复用对话服务 `/chat` 和现有行为标签/机器人播放队列；增加扬声器与麦克风音量滑杆，通过 Reachy daemon 的 `/api/volume/*` 接口代理读写音量。
