@@ -6,8 +6,9 @@
 
 - `library/`：最终播放用的 JSON，保留原始头部动作，只替换双臂动作。
 - `arm_motion_specs/`：人类可读的双臂角度动作，单位是度。
+- `config.json`：维护外部表情信号到五类动作情绪的映射。
 - `build_action_library.py`：从 `.run/arm_emotions_library` 重新生成 `library/`。
-- `play_emotion_action.py`：连接已经启动的 daemon，播放指定情绪。
+- `play_emotion_action.py`：连接已经启动的 daemon，根据传入表情播放对应动作。
 
 ## 五个情绪和动作
 
@@ -39,7 +40,7 @@ python -m pip install -e .
 python -m pip install --force-reinstall XXX.whl（谭师兄魔改rmmc后导出的的wheel）
 ```
 
-## 播放情绪
+## 播放表情信号
 
 另开一个终端：
 
@@ -49,20 +50,28 @@ cd E:\workspace\lab\reachy_mini
 python .\action_call\play_emotion_action.py --list
 ```
 
-播放单个情绪：
+播放单个表情信号：
 
 ```powershell
-python .\action_call\play_emotion_action.py --emotion cheerful
-python .\action_call\play_emotion_action.py --emotion sad
-python .\action_call\play_emotion_action.py --emotion fear
-python .\action_call\play_emotion_action.py --emotion furious
-python .\action_call\play_emotion_action.py --emotion surprised
+python .\action_call\play_emotion_action.py --signal "😁"
+python .\action_call\play_emotion_action.py --signal "😭"
+python .\action_call\play_emotion_action.py --signal "😱"
+python .\action_call\play_emotion_action.py --signal "😡"
+python .\action_call\play_emotion_action.py --signal "🤯"
 ```
 
-只播放动作、不播放声音：
+调用方只需要传表情；具体映射关系由 `action_call/config.json` 的 `signal_map` 维护，例如多个表情都可以映射到同一个 `cheerful`、`sad`、`fear`、`furious` 或 `surprised` 动作。
+
+默认只播放动作、不播放声音：
 
 ```powershell
-python .\action_call\play_emotion_action.py --emotion cheerful --no-sound
+python .\action_call\play_emotion_action.py --signal "😁"
+```
+
+需要同时播放声音时显式加 `--sound`：
+
+```powershell
+python .\action_call\play_emotion_action.py --signal "😁" --sound
 ```
 
 脚本默认会在动作结束后检查双臂是否回到逻辑零位。如果偏差超过 5°，会自动强制复位。

@@ -1,0 +1,23 @@
+{
+  "signal_map": {
+    "😁": "cheerful",
+    "😀": "cheerful",
+    "😄": "cheerful",
+    "😊": "cheerful",
+    "🙂": "cheerful",
+    "😢": "sad",
+    "😭": "sad",
+    "☹️": "sad",
+    "🙁": "sad",
+    "😨": "fear",
+    "😰": "fear",
+    "😱": "fear",
+    "😡": "furious",
+    "😠": "furious",
+    "🤬": "furious",
+    "😮": "surprised",
+    "😯": "surprised",
+    "😲": "surprised",
+    "🤯": "surprised"
+  }
+}

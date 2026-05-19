@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 import time
@@ -17,22 +18,88 @@ if str(SRC_DIR) not in sys.path:
 
 
 LIBRARY_DIR = ACTION_CALL_DIR / "library"
+CONFIG_PATH = ACTION_CALL_DIR / "config.json"
 ARM_HOME = [0.0, 0.0]
 
-EMOTIONS = {
+EMOTION_ACTIONS = {
     "cheerful": ("cheerful1", "快乐"),
-    "happy": ("cheerful1", "快乐"),
-    "joy": ("cheerful1", "快乐"),
     "sad": ("sad1", "悲伤"),
     "fear": ("fear1", "恐惧"),
-    "scared": ("fear1", "恐惧"),
     "furious": ("furious1", "愤怒"),
-    "angry": ("furious1", "愤怒"),
     "surprised": ("surprised1", "惊讶"),
-    "surprise": ("surprised1", "惊讶"),
 }
 
-DISPLAY_ORDER = ("cheerful", "sad", "fear", "furious", "surprised")
+EMOTION_ALIASES = {
+    "happy": "cheerful",
+    "joy": "cheerful",
+    "scared": "fear",
+    "angry": "furious",
+    "surprise": "surprised",
+}
+
+DISPLAY_ORDER = tuple(EMOTION_ACTIONS)
+
+
+def configure_output_encoding() -> None:
+    """Make emoji output safe on Windows terminals using non-UTF-8 defaults."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def canonical_emotion(value: str) -> str | None:
+    """Return the canonical emotion name for a raw value."""
+    normalized = value.strip().lower()
+    if normalized in EMOTION_ACTIONS:
+        return normalized
+    return EMOTION_ALIASES.get(normalized)
+
+
+def load_signal_map(config_path: Path) -> dict[str, str]:
+    """Load and validate the emoji/signal to emotion mapping."""
+    if not config_path.exists():
+        raise FileNotFoundError(f"Missing config file: {config_path}")
+
+    with config_path.open("r", encoding="utf-8") as file:
+        config = json.load(file)
+
+    signal_map = config.get("signal_map")
+    if not isinstance(signal_map, dict):
+        raise ValueError(f"{config_path} must contain a JSON object field named signal_map.")
+
+    resolved_map: dict[str, str] = {}
+    supported = ", ".join(DISPLAY_ORDER)
+    for signal, emotion in signal_map.items():
+        if not isinstance(signal, str) or not signal:
+            raise ValueError("signal_map keys must be non-empty strings.")
+        if not isinstance(emotion, str):
+            raise ValueError(f"signal_map[{signal!r}] must be a string emotion.")
+
+        resolved_emotion = canonical_emotion(emotion)
+        if resolved_emotion is None:
+            raise ValueError(
+                f"signal_map[{signal!r}] has unsupported emotion {emotion!r}; "
+                f"expected one of: {supported}."
+            )
+        resolved_map[signal] = resolved_emotion
+
+    return resolved_map
+
+
+def resolve_signal_to_emotion(signal: str, signal_map: dict[str, str]) -> str:
+    """Resolve a caller-provided emoji/signal into one of the five emotions."""
+    if signal in signal_map:
+        return signal_map[signal]
+
+    legacy_emotion = canonical_emotion(signal)
+    if legacy_emotion is not None:
+        return legacy_emotion
+
+    available_signals = " ".join(signal_map) or "(none)"
+    raise ValueError(
+        f"Unknown signal {signal!r}. Add it to {CONFIG_PATH.name} signal_map. "
+        f"Available signals: {available_signals}"
+    )
 
 
 def format_arm_deg(values: list[float]) -> str:
@@ -85,15 +152,18 @@ def ensure_arms_home(
     return False
 
 
-def print_available_emotions(library_dir: Path) -> None:
-    """Print the supported emotion aliases."""
+def print_available_emotions(library_dir: Path, signal_map: dict[str, str]) -> None:
+    """Print the supported signal to emotion mapping."""
     print(f"Library: {library_dir}")
-    print("Available emotions:")
-    for alias in DISPLAY_ORDER:
-        move_name, label_zh = EMOTIONS[alias]
+    print("Available signal map:")
+    for emotion in DISPLAY_ORDER:
+        move_name, label_zh = EMOTION_ACTIONS[emotion]
         status = "ready" if (library_dir / f"{move_name}.json").exists() else "missing"
-        print(f"  {alias:9} {label_zh:4} -> {move_name:10} [{status}]")
-    print("\nUseful aliases: happy=cheerful, angry=furious, scared=fear.")
+        signals = " ".join(
+            signal for signal, mapped_emotion in signal_map.items() if mapped_emotion == emotion
+        )
+        print(f"  {emotion:9} {label_zh:4} -> {move_name:10} [{status}] signals: {signals}")
+    print("\nLegacy emotion aliases are still accepted: happy=cheerful, angry=furious, scared=fear.")
 
 
 def play_emotion(args: argparse.Namespace) -> None:
@@ -101,7 +171,7 @@ def play_emotion(args: argparse.Namespace) -> None:
     from reachy_mini import ReachyMini
     from reachy_mini.motion.recorded_move import RecordedMoves
 
-    move_name, label_zh = EMOTIONS[args.emotion]
+    move_name, label_zh = EMOTION_ACTIONS[args.emotion]
     move_path = args.library_dir / f"{move_name}.json"
     if not move_path.exists():
         raise FileNotFoundError(
@@ -119,7 +189,7 @@ def play_emotion(args: argparse.Namespace) -> None:
     ) as reachy:
         for index in range(args.repeat):
             print(
-                f"Playing {args.emotion} / {label_zh} "
+                f"Playing {args.signal!r} -> {args.emotion} / {label_zh} "
                 f"({move_name}), repeat {index + 1}/{args.repeat}."
             )
             reachy.play_move(
@@ -142,8 +212,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """Build CLI parser."""
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--emotion", choices=sorted(EMOTIONS), help="Emotion name or alias to play.")
+    group.add_argument(
+        "--signal",
+        "--emoji",
+        "--emotion",
+        dest="signal",
+        help="Emoji/signal to play. --emotion is kept as a legacy option name.",
+    )
     group.add_argument("--list", action="store_true", help="List generated emotions and exit.")
+    parser.add_argument("--config", type=Path, default=CONFIG_PATH)
     parser.add_argument("--library-dir", type=Path, default=LIBRARY_DIR)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--pause-between", type=float, default=1.0)
@@ -151,10 +228,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--connection-mode", default="localhost_only")
     parser.add_argument("--media-backend", default="default")
     parser.add_argument(
+        "--sound",
+        dest="sound",
+        action="store_true",
+        help="Play the WAV sound together with the motion.",
+    )
+    parser.add_argument(
         "--no-sound",
         dest="sound",
         action="store_false",
-        help="Play the motion only and skip the WAV sound.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--no-final-home-check",
@@ -165,21 +248,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--home-tolerance-deg", type=float, default=5.0)
     parser.add_argument("--reset-duration", type=float, default=1.5)
     parser.add_argument("--reset-attempts", type=int, default=2)
-    parser.set_defaults(final_home_check=True, sound=True)
+    parser.set_defaults(final_home_check=True, sound=False)
     return parser
 
 
 def main() -> None:
     """Run the CLI."""
+    configure_output_encoding()
     args = build_arg_parser().parse_args()
+    args.config = args.config.resolve()
     args.library_dir = args.library_dir.resolve()
     if args.repeat < 1:
         raise ValueError("--repeat must be >= 1")
 
+    signal_map = load_signal_map(args.config)
     if args.list:
-        print_available_emotions(args.library_dir)
+        print_available_emotions(args.library_dir, signal_map)
         return
 
+    args.emotion = resolve_signal_to_emotion(args.signal, signal_map)
     play_emotion(args)
 
 
