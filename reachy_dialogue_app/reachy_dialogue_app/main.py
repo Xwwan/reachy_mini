@@ -263,7 +263,7 @@ class LiveVoiceSession:
         self.queue.put(None)
         self.thread.join(timeout=5)
         response = requests.post(
-            urljoin(self.service_url, "/tools/voice-latency/finish-stream"),
+            urljoin(self.service_url, "/voice/live/finish-stream"),
             json={
                 "session_id": self.session_id,
                 "conversation_id": conversation_id,
@@ -274,7 +274,10 @@ class LiveVoiceSession:
         )
         if response.status_code == 404:
             response.close()
-            data = self._finish_json(conversation_id=conversation_id, tts_enabled=True)
+            data = self._finish_json(
+                conversation_id=conversation_id,
+                tts_enabled=tts_enabled,
+            )
             transcript = str(data.get("transcript") or "")
             if transcript:
                 yield {
@@ -285,6 +288,9 @@ class LiveVoiceSession:
                         "transcript": transcript,
                     },
                 }
+            reply = str(data.get("reply") or "")
+            if reply:
+                yield {"event": "delta", "data": {"delta": reply}}
             yield {"event": "done", "data": data}
             return
 
@@ -948,6 +954,10 @@ class ReachyDialogueApp(ReachyMiniApp):
                     "service_url": current["service_url"],
                 }
 
+        @self.settings_app.get("/api/app-mode")
+        def app_mode() -> dict[str, Any]:
+            return {"web_only": False}
+
         @self.settings_app.post("/api/voice-chat")
         def voice_chat(payload: VoiceChatPayload) -> dict[str, Any]:
             current = _snapshot(settings, settings_lock)
@@ -992,92 +1002,13 @@ class ReachyDialogueApp(ReachyMiniApp):
                 )
             return data
 
-        @self.settings_app.post("/api/text-chat-stream")
-        def text_chat_stream(payload: TextChatPayload) -> StreamingResponse:
-            current = _snapshot(settings, settings_lock)
-            conversation_id = (
-                payload.conversation_id or current["conversation_id"]
-            ).strip()
-            if not conversation_id:
-                conversation_id = DEFAULT_CONVERSATION_ID
-            text = payload.text.strip()
-            if not text:
-                raise HTTPException(status_code=422, detail="文本不能为空。")
-
-            def event_stream():
-                try:
-                    yield _sse_frame(
-                        "transcript",
-                        {
-                            "conversation_id": conversation_id,
-                            "transcript": text,
-                        },
-                    )
-                    data = _post_text_chat(
-                        service_url=current["service_url"],
-                        conversation_id=conversation_id,
-                        text=text,
-                        tts_enabled=payload.tts_enabled,
-                    )
-                    reply = _reply_text_from_payload(data)
-                    if reply:
-                        yield _sse_frame("delta", {"delta": reply})
-                    behavior_results = _trigger_behaviors_from_text(
-                        reply,
-                        behavior_config,
-                    )
-                    for result in behavior_results:
-                        yield _sse_frame(
-                            "behavior",
-                            _behavior_result_payload(result),
-                        )
-                    action_signal = _first_ok_module_key(
-                        behavior_results,
-                        "action",
-                    )
-                    audio_base64 = (
-                        data.get("audio_base64")
-                        or data.get("response_audio_base64")
-                        or data.get("tts_audio_base64")
-                    )
-                    audio_sample_rate = int(
-                        data.get("sample_rate")
-                        or data.get("audio_sample_rate")
-                        or current["tts_sample_rate"]
-                    )
-                    playback_done = threading.Event()
-                    jobs.put(
-                        RobotJob(
-                            audio_base64=audio_base64,
-                            audio_sample_rate=audio_sample_rate,
-                            action_signal=action_signal,
-                            action_config=_module_config(behavior_config, "action"),
-                            done_event=playback_done,
-                        )
-                    )
-                    done_payload = dict(data)
-                    done_payload.setdefault("conversation_id", conversation_id)
-                    done_payload.setdefault("transcript", text)
-                    done_payload.setdefault("reply", reply)
-                    yield _sse_frame("done", done_payload)
-                    playback_done.wait(timeout=120)
-                    yield _sse_frame("playback_done", {"ok": True})
-                except HTTPException as exc:
-                    yield _sse_frame("error", {"message": str(exc.detail)})
-                except Exception as exc:
-                    yield _sse_frame(
-                        "error",
-                        {"message": str(exc) or exc.__class__.__name__},
-                    )
-
-            return StreamingResponse(
-                event_stream(),
-                media_type="text/event-stream; charset=utf-8",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "X-Accel-Buffering": "no",
-                },
-            )
+        _register_text_chat_routes(
+            self.settings_app,
+            settings,
+            settings_lock,
+            behavior_config=behavior_config,
+            jobs=jobs,
+        )
 
         @self.settings_app.get("/api/audio-volume")
         def get_audio_volume() -> dict[str, Any]:
@@ -1428,6 +1359,157 @@ def _register_settings_routes(
             }
 
 
+def _register_text_chat_routes(
+    app: FastAPI,
+    settings: dict[str, Any],
+    settings_lock: threading.Lock,
+    *,
+    behavior_config: dict[str, Any],
+    jobs: queue.Queue[RobotJob] | None = None,
+) -> None:
+    @app.post("/api/text-chat-stream")
+    def text_chat_stream(payload: TextChatPayload) -> StreamingResponse:
+        current = _snapshot(settings, settings_lock)
+        conversation_id = (
+            payload.conversation_id or current["conversation_id"]
+        ).strip()
+        if not conversation_id:
+            conversation_id = DEFAULT_CONVERSATION_ID
+        text = payload.text.strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="文本不能为空。")
+
+        def event_stream():
+            upstream: requests.Response | None = None
+
+            def finish_events(done_payload: dict[str, Any], reply: str):
+                behavior_results = _trigger_behaviors_from_text(
+                    reply,
+                    behavior_config,
+                )
+                for result in behavior_results:
+                    yield _sse_frame(
+                        "behavior",
+                        _behavior_result_payload(result),
+                    )
+                done_payload.setdefault("conversation_id", conversation_id)
+                done_payload.setdefault("transcript", text)
+                done_payload.setdefault("reply", reply)
+                if jobs is None:
+                    yield _sse_frame("done", done_payload)
+                    yield _sse_frame("playback_done", {"ok": True, "skipped": True})
+                    return
+
+                action_signal = _first_ok_module_key(
+                    behavior_results,
+                    "action",
+                )
+                audio_base64 = (
+                    done_payload.get("audio_base64")
+                    or done_payload.get("response_audio_base64")
+                    or done_payload.get("tts_audio_base64")
+                )
+                audio_sample_rate = int(
+                    done_payload.get("sample_rate")
+                    or done_payload.get("audio_sample_rate")
+                    or current["tts_sample_rate"]
+                )
+                playback_done = threading.Event()
+                jobs.put(
+                    RobotJob(
+                        audio_base64=audio_base64,
+                        audio_sample_rate=audio_sample_rate,
+                        action_signal=action_signal,
+                        action_config=_module_config(behavior_config, "action"),
+                        done_event=playback_done,
+                    )
+                )
+                yield _sse_frame("done", done_payload)
+                playback_done.wait(timeout=120)
+                yield _sse_frame("playback_done", {"ok": True})
+
+            try:
+                yield _sse_frame(
+                    "transcript",
+                    {
+                        "conversation_id": conversation_id,
+                        "transcript": text,
+                    },
+                )
+                upstream = requests.post(
+                    urljoin(current["service_url"], "/chat/stream"),
+                    json={
+                        "conversation_id": conversation_id,
+                        "message": text,
+                        "tts_enabled": payload.tts_enabled,
+                    },
+                    stream=True,
+                    timeout=(10, 120),
+                )
+                if upstream.status_code == 404:
+                    upstream.close()
+                    upstream = None
+                    data = _post_text_chat(
+                        service_url=current["service_url"],
+                        conversation_id=conversation_id,
+                        text=text,
+                        tts_enabled=payload.tts_enabled,
+                    )
+                    reply = _reply_text_from_payload(data)
+                    if reply:
+                        yield _sse_frame("delta", {"delta": reply})
+                    yield from finish_events(dict(data), reply)
+                    return
+
+                reply_parts: list[str] = []
+                for item in _iter_sse_events(upstream):
+                    event = str(item.get("event") or "message")
+                    data = item.get("data") or {}
+                    if event == "delta":
+                        delta = str(data.get("delta") or "")
+                        if delta:
+                            reply_parts.append(delta)
+                        yield _sse_frame(event, data)
+                        continue
+                    if event == "done":
+                        reply = _reply_text_from_payload(data) or "".join(reply_parts)
+                        yield from finish_events(dict(data), reply)
+                        return
+                    yield _sse_frame(event, data)
+                    if event == "error":
+                        return
+
+                reply = "".join(reply_parts)
+                if reply:
+                    yield from finish_events(
+                        {
+                            "conversation_id": conversation_id,
+                            "transcript": text,
+                            "reply": reply,
+                        },
+                        reply,
+                    )
+            except HTTPException as exc:
+                yield _sse_frame("error", {"message": str(exc.detail)})
+            except Exception as exc:
+                yield _sse_frame(
+                    "error",
+                    {"message": str(exc) or exc.__class__.__name__},
+                )
+            finally:
+                if upstream is not None:
+                    upstream.close()
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+
 def _register_local_mic_routes(
     app: FastAPI,
     settings: dict[str, Any],
@@ -1551,16 +1633,33 @@ def _build_web_only_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/")
-    def local_mic_page() -> FileResponse:
-        return FileResponse(static_dir / "local-mic-test.html")
+    def index_page() -> FileResponse:
+        return FileResponse(static_dir / "index.html")
 
     _register_settings_routes(app, settings, settings_lock)
+    _register_text_chat_routes(
+        app,
+        settings,
+        settings_lock,
+        behavior_config=behavior_config,
+    )
     _register_local_mic_routes(
         app,
         settings,
         settings_lock,
         behavior_config=behavior_config,
     )
+
+    @app.get("/api/app-mode")
+    def app_mode() -> dict[str, Any]:
+        return {"web_only": True}
+
+    @app.get("/api/audio-volume")
+    def web_only_audio_volume() -> dict[str, Any]:
+        return {
+            "speaker": {"volume": None, "available": False},
+            "microphone": {"volume": None, "available": False},
+        }
 
     @app.get("/api/emoji-config")
     def get_emoji_config() -> dict[str, Any]:
@@ -2074,12 +2173,12 @@ def _post_text_chat(
     request_variants = [
         {
             "conversation_id": conversation_id,
-            "text": text,
+            "message": text,
             "tts_enabled": tts_enabled,
         },
         {
             "conversation_id": conversation_id,
-            "message": text,
+            "text": text,
             "tts_enabled": tts_enabled,
         },
     ]
@@ -2305,7 +2404,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=os.environ.get("REACHY_DIALOGUE_WEB_ONLY", "").lower()
         in {"1", "true", "yes"},
-        help="Only serve the browser local-microphone test page; do not connect to Reachy.",
+        help="Serve the browser-only text and local-microphone pages; do not connect to Reachy.",
     )
     parser.add_argument(
         "--web-host",

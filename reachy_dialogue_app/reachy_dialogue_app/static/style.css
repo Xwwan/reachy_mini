@@ -36,6 +36,10 @@ select {
     padding: 16px;
 }
 
+.hidden {
+    display: none !important;
+}
+
 .topbar {
     display: flex;
     align-items: center;

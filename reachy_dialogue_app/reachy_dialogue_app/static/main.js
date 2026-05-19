@@ -9,6 +9,7 @@ let playbackTestTimerId = null;
 let playbackTestLevelTimerId = null;
 let isPlaybackTestRecording = false;
 let isTextSending = false;
+let appMode = { web_only: false };
 
 const els = {
     serviceUrl: document.getElementById("service-url"),
@@ -39,6 +40,10 @@ const els = {
     transcript: document.getElementById("transcript"),
     reply: document.getElementById("reply"),
     debugInfo: document.getElementById("debug-info"),
+    volumePanel: document.querySelector(".volume-panel"),
+    voicePanel: document.querySelector(".voice-panel"),
+    playbackTestPanel: document.querySelector(".playback-test-panel"),
+    debugPanel: document.querySelector(".debug-panel"),
 };
 
 async function loadSettings() {
@@ -47,6 +52,32 @@ async function loadSettings() {
     els.serviceUrl.value = settings.service_url;
     els.conversationId.value = settings.conversation_id;
     els.ttsSampleRate.value = settings.tts_sample_rate;
+}
+
+async function loadAppMode() {
+    const response = await fetch("/api/app-mode");
+    if (!response.ok) {
+        return { web_only: false };
+    }
+    return response.json();
+}
+
+function applyAppMode(mode) {
+    appMode = mode || { web_only: false };
+    if (!appMode.web_only) {
+        return;
+    }
+    document.body.classList.add("web-only");
+    for (const panel of [
+        els.volumePanel,
+        els.voicePanel,
+        els.playbackTestPanel,
+        els.debugPanel,
+    ]) {
+        panel?.classList.add("hidden");
+    }
+    els.liveTranscript.textContent = "web-only 模式未连接机器人麦克风";
+    els.debugInfo.textContent = "web-only 模式未连接机器人";
 }
 
 async function saveSettings() {
@@ -284,8 +315,10 @@ async function sendManualText() {
     } finally {
         isTextSending = false;
         els.sendTextBtn.disabled = false;
-        els.recordBtn.disabled = false;
-        els.playbackTestBtn.disabled = false;
+        if (!appMode.web_only) {
+            els.recordBtn.disabled = false;
+            els.playbackTestBtn.disabled = false;
+        }
     }
 }
 
@@ -661,7 +694,10 @@ for (const input of [els.serviceUrl, els.conversationId, els.ttsSampleRate]) {
 
 loadSettings()
     .then(async () => {
+        applyAppMode(await loadAppMode());
         await checkHealth();
-        await loadVolumeControls();
+        if (!appMode.web_only) {
+            await loadVolumeControls();
+        }
     })
     .catch((error) => setStatus(error.message || String(error)));

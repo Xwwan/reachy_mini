@@ -20,10 +20,10 @@ tags:
 - 对话服务由用户手动启动。
 - 默认服务地址是 `http://127.0.0.1:12312`，也可以在 app 页面里修改。
 - App 使用机器人麦克风录音，转成 16kHz、16-bit、mono PCM 后通过对话服务的 `/voice/live/*` 实时语音接口分块发送。
-- 对话服务负责实时 STT、生成回复和 TTS；app 停止录音时优先通过流式接口接收 `transcript` / `delta` / `audio` / `done` 事件，不再把整段音频发到 `/voice/chat` 做二次识别。
+- 对话服务负责实时 STT、生成回复、长期记忆检索和 TTS；正式机器人麦克风停止录音时优先请求 `/voice/live/finish-stream`，通过 SSE 接收 `transcript` / `delta` / `audio` / `done` 事件，不再把整段音频发到 `/voice/chat` 做二次识别，也不走延迟测试接口。
 - 流式 TTS 会以多个 `audio` 事件返回 24kHz、16-bit、mono PCM chunk；app 会收集这些 chunk，合并后写成临时 WAV 并通过 `reachy_mini.media.play_sound()` 让机器人播放。
-- 如果服务端没有流式 finish 接口，app 会回退到 `/voice/live/finish` 的非流式 JSON 响应并继续播放返回的 TTS PCM。
-- 页面支持手动输入文本。文本会转发到对话服务的 `/chat`；app 优先使用 `text` 字段，如果服务返回常见字段校验错误，会自动用 `message` 字段重试。返回里如果包含 `audio_base64`、`response_audio_base64` 或 `tts_audio_base64`，会继续由机器人扬声器播放。
+- 如果服务端没有正式流式 finish 接口，app 会回退到 `/voice/live/finish` 的非流式 JSON 响应，包装成兼容的 SSE `transcript` / `delta` / `done` 事件，并继续播放返回的 TTS PCM；这个 fallback 仍走记忆检索链路。
+- 页面支持手动输入文本。文本会优先转发到对话服务的 `/chat/stream` 并透传 `meta` / `delta` / `done` SSE；如果服务端没有流式文本接口，会回退到 `/chat`，再把完整回复包装成兼容的 `delta` / `done`。返回里如果包含 `audio_base64`、`response_audio_base64` 或 `tts_audio_base64`，会继续由机器人扬声器播放。
 - 页面支持调整扬声器和麦克风音量。滑杆通过 Reachy daemon 的 `/api/volume/current`、`/api/volume/set`、`/api/volume/microphone/current`、`/api/volume/microphone/set` 代理读写，取值范围是 0-100。
 - Dialogue app 不直接控制机器人动作；它只从模型回复中解析行为标签并向表情/动作模块发送控制信号。
 - 页面里临时加入了“机器人麦克风回放测试”：录一段机器人麦克风输入，停止后不经过对话服务，直接从机器人扬声器播放原始录音，方便检查机器人麦克风和扬声器链路。
@@ -89,10 +89,10 @@ cd /home/tzhx/wyl/reachy_mini/reachy_dialogue_app
 http://127.0.0.1:8042/
 ```
 
-## 不连接机器人：本机麦克风测试页
+## 不连接机器人：web-only 文字输入和本机麦克风测试
 
-如果只想验证本机电脑麦克风、实时 STT、流式文本回复和流式 TTS 播放，不需要启动
-Reachy daemon，也不需要连接机器人：
+如果只想验证文字对话、本机电脑麦克风、实时 STT、流式文本回复和流式 TTS 播放，
+不需要启动 Reachy daemon，也不需要连接机器人：
 
 ```bash
 cd /Users/xwan/code/reachy_mini/reachy_dialogue_app
@@ -106,10 +106,20 @@ conda run -n toy python -m reachy_dialogue_app.main --web-only
 http://127.0.0.1:8042/
 ```
 
-这个页面使用浏览器 `getUserMedia()` 读取本机麦克风，把音频降采样为
+web-only 根页面会打开普通对话页，但隐藏机器人麦克风、机器人音量和机器人回放测试控件。
+其中“手动输入”会调用本地 app 的 `/api/text-chat-stream`，再优先转发到对话服务
+`/chat/stream`；如果后端启用长期记忆检索，web-only 文字输入也会透传
+`retrieval_status`、`retrieved_memory_ids` 等返回字段。
+
+本机麦克风测试页使用浏览器 `getUserMedia()` 读取本机麦克风，把音频降采样为
 16kHz、16-bit、mono PCM，通过本地 app 代理发送到对话服务的 `/voice/live/*`
 接口，停止录音后用 SSE 接收 `transcript` / `delta` / `audio` / `done`。
 TTS `audio` chunk 会直接用浏览器扬声器播放。
+
+本机麦克风测试页的 `/api/local-mic/finish-stream` 仍会请求
+`/tools/voice-latency/finish-stream`，用于端到端延迟测试；正式机器人语音的
+`/api/robot-mic/stop-stream` 使用 `/voice/live/finish-stream`，404 时才 fallback 到
+`/voice/live/finish`。
 
 如果你已经用普通机器人 app 启动了页面，也可以从机器人页面点击“本机麦克风测试”，
 或直接打开：
