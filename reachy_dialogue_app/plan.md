@@ -58,3 +58,5 @@
 - 加入 Reachy Emoji 联动：dialogue app 最初维护 `emoji_config.json` 表示可用表情和 `signal_map`；当回复中出现配置 key 时，通过 URL 请求触发表情服务。
 - 本次调整计划：把表情联动升级为通用行为标签联动。配置从 JSON 迁移到 `behavior_config.yaml`，由 YAML 声明模块、可识别 tag 名、触发 key 白名单或 `*`、触发方式。dialogue app 只解析模型回复里的 `[tag:key]`；表情继续通过 URL 触发，动作暂时直接调用 `action_call` 函数且不在 dialogue app 内做映射；前端继续显示原始 tag 文本，只额外展示触发状态。
 - 本次调整计划：增加手动文本输入入口，复用对话服务 `/chat` 和现有行为标签/机器人播放队列；增加扬声器与麦克风音量滑杆，通过 Reachy daemon 的 `/api/volume/*` 接口代理读写音量。
+- 本次调整计划：把现有页面升级为完整的“实时首回复 + 异步记忆补充”对话前端。用户已确认可以做完整改造，不限 MVP；后端接口已具备但当前服务不一定启动；文本和语音回复都进入同一条聊天时间线；保留文本朗读开关并默认开启；切换 `conversation_id` 不清空当前时间线；需要开发者调试面板。
+- 实现方向：新增 `/api/followups/stream` 同源代理，前端建立独立 `EventSource` 监听 follow-up；聊天状态按 `request_id` / message id 绑定，不按“最后一条消息”追加；`/chat/stream` 与机器人麦克风 `stop-stream` 都复用同一套 timeline 渲染；follow-up 作为独立补充/修正消息插入，避免和当前 streaming 回复串线；调试面板展示 follow-up 连接状态、最近 request、原始 payload 和可选记忆维护动作。

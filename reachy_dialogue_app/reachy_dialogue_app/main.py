@@ -132,6 +132,10 @@ class TextChatPayload(BaseModel):
     tts_enabled: bool = True
 
 
+class ConversationActionPayload(BaseModel):
+    conversation_id: str | None = None
+
+
 class VolumePayload(BaseModel):
     volume: int = Field(..., ge=0, le=100)
 
@@ -1009,6 +1013,11 @@ class ReachyDialogueApp(ReachyMiniApp):
             behavior_config=behavior_config,
             jobs=jobs,
         )
+        _register_followup_routes(
+            self.settings_app,
+            settings,
+            settings_lock,
+        )
 
         @self.settings_app.get("/api/audio-volume")
         def get_audio_volume() -> dict[str, Any]:
@@ -1114,7 +1123,6 @@ class ReachyDialogueApp(ReachyMiniApp):
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
 
             def event_stream():
-                audio_chunks: list[bytes] = []
                 audio_sample_rate = int(current["tts_sample_rate"])
                 try:
                     yield _sse_frame(
@@ -1138,11 +1146,18 @@ class ReachyDialogueApp(ReachyMiniApp):
                         data = item.get("data") or {}
                         if event == "audio":
                             audio_base64 = data.get("audio_base64")
-                            if isinstance(audio_base64, str) and audio_base64:
-                                audio_chunks.append(base64.b64decode(audio_base64))
                             audio_sample_rate = int(
-                                data.get("sample_rate") or audio_sample_rate
+                                data.get("sample_rate")
+                                or data.get("audio_sample_rate")
+                                or audio_sample_rate
                             )
+                            if isinstance(audio_base64, str) and audio_base64:
+                                jobs.put(
+                                    RobotJob(
+                                        audio_base64=audio_base64,
+                                        audio_sample_rate=audio_sample_rate,
+                                    )
+                                )
                         if event == "done":
                             recorder.final_response = dict(data)
                             recorder.live_transcript = LiveTranscript(
@@ -1164,15 +1179,20 @@ class ReachyDialogueApp(ReachyMiniApp):
                                 "action",
                             )
                             audio_base64 = data.get("audio_base64")
-                            if not audio_base64 and audio_chunks:
-                                audio_base64 = base64.b64encode(
-                                    b"".join(audio_chunks)
-                                ).decode("ascii")
+                            if isinstance(audio_base64, str) and audio_base64:
+                                jobs.put(
+                                    RobotJob(
+                                        audio_base64=audio_base64,
+                                        audio_sample_rate=int(
+                                            data.get("sample_rate")
+                                            or data.get("audio_sample_rate")
+                                            or audio_sample_rate
+                                        ),
+                                    )
+                                )
                             playback_done = threading.Event()
                             jobs.put(
                                 RobotJob(
-                                    audio_base64=audio_base64,
-                                    audio_sample_rate=audio_sample_rate,
                                     action_signal=action_signal,
                                     action_config=_module_config(
                                         behavior_config,
@@ -1510,6 +1530,117 @@ def _register_text_chat_routes(
         )
 
 
+def _register_followup_routes(
+    app: FastAPI,
+    settings: dict[str, Any],
+    settings_lock: threading.Lock,
+) -> None:
+    @app.get("/api/followups/stream")
+    def followups_stream(conversation_id: str | None = None) -> StreamingResponse:
+        current = _snapshot(settings, settings_lock)
+        selected_conversation_id = (
+            conversation_id or current["conversation_id"] or DEFAULT_CONVERSATION_ID
+        ).strip()
+
+        def event_stream():
+            upstream: requests.Response | None = None
+            try:
+                upstream = requests.get(
+                    urljoin(current["service_url"], "/followups/stream"),
+                    params={"conversation_id": selected_conversation_id},
+                    stream=True,
+                    timeout=(3, None),
+                )
+                for item in _iter_sse_events(upstream):
+                    yield _sse_frame(
+                        str(item.get("event") or "message"),
+                        item.get("data") or {},
+                    )
+            except HTTPException as exc:
+                yield _sse_frame("followup_error", {"message": str(exc.detail)})
+            except Exception as exc:
+                yield _sse_frame(
+                    "followup_error",
+                    {"message": str(exc) or exc.__class__.__name__},
+                )
+            finally:
+                if upstream is not None:
+                    upstream.close()
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/followups/pending")
+    def followups_pending(conversation_id: str | None = None) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        params = {}
+        if conversation_id:
+            params["conversation_id"] = conversation_id.strip()
+        response = requests.get(
+            urljoin(current["service_url"], "/followups/pending"),
+            params=params,
+            timeout=10,
+        )
+        return _json_or_error(response)
+
+    @app.post("/api/followups/{request_id}/run")
+    def run_followup(
+        request_id: str,
+        payload: ConversationActionPayload | None = None,
+    ) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        body: dict[str, Any] = {}
+        if payload is not None and payload.conversation_id:
+            body["conversation_id"] = payload.conversation_id.strip()
+        response = requests.post(
+            urljoin(
+                current["service_url"],
+                f"/followups/{quote(request_id, safe='')}/run",
+            ),
+            json=body,
+            timeout=90,
+        )
+        return _json_or_error(response)
+
+    @app.post("/api/memory/curate")
+    def curate_memory(
+        payload: ConversationActionPayload | None = None,
+    ) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        conversation_id = (
+            payload.conversation_id
+            if payload is not None and payload.conversation_id
+            else current["conversation_id"]
+        ).strip()
+        response = requests.post(
+            urljoin(current["service_url"], "/memory/curate"),
+            json={"conversation_id": conversation_id},
+            timeout=90,
+        )
+        return _json_or_error(response)
+
+    @app.post("/api/memory/profile/refresh")
+    def refresh_memory_profile(
+        payload: ConversationActionPayload | None = None,
+    ) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        body: dict[str, Any] = {}
+        if payload is not None and payload.conversation_id:
+            body["conversation_id"] = payload.conversation_id.strip()
+        response = requests.post(
+            urljoin(current["service_url"], "/memory/profile/refresh"),
+            json=body,
+            timeout=90,
+        )
+        return _json_or_error(response)
+
+
 def _register_local_mic_routes(
     app: FastAPI,
     settings: dict[str, Any],
@@ -1576,7 +1707,7 @@ def _register_local_mic_routes(
             response: requests.Response | None = None
             try:
                 response = requests.post(
-                    urljoin(current["service_url"], "/tools/voice-latency/finish-stream"),
+                    urljoin(current["service_url"], "/voice/live/finish-stream"),
                     json={
                         "session_id": payload.session_id,
                         "conversation_id": conversation_id,
@@ -1585,6 +1716,21 @@ def _register_local_mic_routes(
                     stream=True,
                     timeout=(10, 120),
                 )
+                if response.status_code == 404:
+                    response.close()
+                    response = requests.post(
+                        urljoin(
+                            current["service_url"],
+                            "/tools/voice-latency/finish-stream",
+                        ),
+                        json={
+                            "session_id": payload.session_id,
+                            "conversation_id": conversation_id,
+                            "tts_enabled": payload.tts_enabled,
+                        },
+                        stream=True,
+                        timeout=(10, 120),
+                    )
                 for item in _iter_sse_events(response):
                     event = str(item.get("event") or "message")
                     data = item.get("data") or {}
@@ -1643,6 +1789,7 @@ def _build_web_only_app() -> FastAPI:
         settings_lock,
         behavior_config=behavior_config,
     )
+    _register_followup_routes(app, settings, settings_lock)
     _register_local_mic_routes(
         app,
         settings,
