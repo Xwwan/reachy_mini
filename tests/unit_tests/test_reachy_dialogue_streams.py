@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 def test_reachy_dialogue_frontend_streams() -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    script = repo_root / "reachy_dialogue_app" / "tests" / "dialogue_stream_mock_test.js"
+    script = repo_root / "tests" / "unit_tests" / "dialogue_stream_mock_test.js"
     subprocess.run(["node", str(script)], cwd=repo_root, check=True)
 
 
