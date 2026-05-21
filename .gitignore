@@ -218,6 +218,11 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# Reachy dialogue app local model artifacts
+reachy_dialogue_app/models/*.onnx
+reachy_dialogue_app/models/*.onnx.*
+!reachy_dialogue_app/models/README.md
+
 # PyPI configuration file
 .pypirc
 

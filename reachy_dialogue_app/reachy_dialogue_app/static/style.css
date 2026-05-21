@@ -400,6 +400,20 @@ label {
     min-width: 0;
 }
 
+.auto-voice-row {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+}
+
+.auto-voice-row strong {
+    color: var(--muted);
+    font-size: 0.86rem;
+    text-align: right;
+}
+
 .record-button {
     min-height: 58px;
     font-size: 1.05rem;
@@ -727,6 +741,14 @@ label {
 
     .voice-mode-row {
         grid-template-columns: 1fr;
+    }
+
+    .auto-voice-row {
+        grid-template-columns: 1fr;
+    }
+
+    .auto-voice-row strong {
+        text-align: left;
     }
 
     #recording-time {

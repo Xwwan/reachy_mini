@@ -11,6 +11,10 @@ let isPlaybackTestRecording = false;
 let isTextSending = false;
 let appMode = { web_only: false };
 let activeVoiceMode = null;
+let isAutoVoiceActive = false;
+let autoVoiceSessionId = null;
+let autoVoiceSource = null;
+let autoVoiceExchange = null;
 
 let localAudioContext = null;
 let localPlaybackContext = null;
@@ -170,6 +174,8 @@ const els = {
     healthBtn: document.getElementById("health-btn"),
     voiceInputMode: document.getElementById("voice-input-mode"),
     localAbortBtn: document.getElementById("local-abort-btn"),
+    autoVoiceBtn: document.getElementById("auto-voice-btn"),
+    autoVoiceStatus: document.getElementById("auto-voice-status"),
     recordBtn: document.getElementById("record-btn"),
     recordingTime: document.getElementById("recording-time"),
     playbackTestBtn: document.getElementById("playback-test-btn"),
@@ -912,6 +918,354 @@ async function abortLocalRecording() {
     }
     resetLocalRecordingControls();
     setStatus("已取消本机麦克风录音");
+}
+
+async function toggleAutoVoice() {
+    if (isAutoVoiceActive) {
+        await stopAutoVoice();
+        return;
+    }
+    await startAutoVoice();
+}
+
+async function startAutoVoice() {
+    if (isRecording || isTextSending || isPlaybackTestRecording) {
+        throw new Error("请先结束当前录音、文本发送或回放测试。");
+    }
+    await saveSettings();
+    connectFollowups();
+    const inputMode = currentVoiceMode();
+    const response = await fetch("/api/auto-voice/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            input_mode: inputMode,
+            conversation_id: normalizedConversationId(),
+            tts_enabled: els.textTtsEnabled.checked,
+        }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(payload.detail || payload.message || "启动自动对话失败");
+    }
+
+    autoVoiceSessionId = payload.session_id;
+    isAutoVoiceActive = true;
+    isRecording = true;
+    activeVoiceMode = inputMode === "local" ? "auto-local" : "auto-robot";
+    autoVoiceExchange = null;
+    els.autoVoiceBtn.textContent = "退出对话模式";
+    els.autoVoiceBtn.classList.add("recording");
+    els.autoVoiceStatus.textContent = "正在连接";
+    els.recordBtn.disabled = true;
+    els.localAbortBtn.disabled = true;
+    els.sendTextBtn.disabled = true;
+    if (!appMode.web_only) {
+        els.playbackTestBtn.disabled = true;
+    }
+    recordingStartedAt = Date.now();
+    timerId = window.setInterval(updateTimer, 250);
+
+    autoVoiceSource = new EventSource(
+        `/api/auto-voice/events?session_id=${encodeURIComponent(autoVoiceSessionId)}`,
+    );
+    for (const eventName of [
+        "snapshot",
+        "state",
+        "level",
+        "speech_start",
+        "speech_end",
+        "speech_cancelled",
+        "utterance",
+        "transcript",
+        "meta",
+        "delta",
+        "audio",
+        "behavior",
+        "done",
+        "playback_done",
+        "warning",
+        "error",
+    ]) {
+        autoVoiceSource.addEventListener(eventName, (event) => {
+            handleAutoVoiceEvent(eventName, parseEventSourcePayload(event.data));
+        });
+    }
+    autoVoiceSource.onerror = () => {
+        setStatus("自动对话事件通道断开");
+        els.autoVoiceStatus.textContent = "事件通道断开";
+    };
+
+    if (inputMode === "local") {
+        await startAutoLocalAudioCapture();
+    }
+    setStatus(inputMode === "local" ? "自动对话：电脑麦克风监听中" : "自动对话：机器人麦克风监听中");
+}
+
+async function startAutoLocalAudioCapture() {
+    await ensureLocalPlaybackContext();
+    localMediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+        },
+    });
+    localAudioContext = new AudioContext();
+    localSourceNode = localAudioContext.createMediaStreamSource(localMediaStream);
+    localProcessorNode = localAudioContext.createScriptProcessor(4096, 1, 1);
+    localProcessorNode.onaudioprocess = (event) => {
+        if (!isAutoVoiceActive || activeVoiceMode !== "auto-local") {
+            return;
+        }
+        const input = event.inputBuffer.getChannelData(0);
+        updateLocalMicLevel(input);
+        enqueueLocalPcm(
+            downsampleToPcm16(
+                input,
+                localAudioContext.sampleRate,
+                LOCAL_TARGET_SAMPLE_RATE,
+            ),
+        );
+    };
+    localSourceNode.connect(localProcessorNode);
+    localProcessorNode.connect(localAudioContext.destination);
+    localSendQueue = [];
+    localPendingBytes = new Uint8Array(0);
+    localSentBytes = 0;
+    localSentChunks = 0;
+    localAcceptedBytes = 0;
+    localSendLoopPromise = sendAutoLocalMicLoop();
+}
+
+async function sendAutoLocalMicLoop() {
+    while (isAutoVoiceActive || localSendQueue.length > 0) {
+        const chunk = localSendQueue.shift();
+        if (!chunk) {
+            await sleep(25);
+            continue;
+        }
+        const response = await fetch("/api/auto-voice/chunk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                session_id: autoVoiceSessionId,
+                audio_base64: bytesToBase64(chunk),
+                sample_rate: LOCAL_TARGET_SAMPLE_RATE,
+            }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.error) {
+            throw new Error(payload.detail || payload.error?.message || "自动对话音频块发送失败");
+        }
+        localSentChunks += 1;
+        localSentBytes += chunk.length;
+        localAcceptedBytes += chunk.length;
+        renderDebugInfo(localMicDebug({ mode: "auto-local" }));
+    }
+}
+
+async function stopAutoVoice() {
+    const sessionId = autoVoiceSessionId;
+    isAutoVoiceActive = false;
+    isRecording = false;
+    if (autoVoiceSource) {
+        autoVoiceSource.close();
+        autoVoiceSource = null;
+    }
+    if (activeVoiceMode === "auto-local") {
+        if (localPendingBytes.length > 0) {
+            localSendQueue.push(localPendingBytes);
+            localPendingBytes = new Uint8Array(0);
+        }
+        stopLocalAudioGraph();
+        if (localSendLoopPromise) {
+            await localSendLoopPromise.catch(() => {});
+        }
+    }
+    if (sessionId) {
+        await fetch("/api/auto-voice/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: sessionId }),
+        }).catch(() => {});
+    }
+    window.clearInterval(timerId);
+    timerId = null;
+    activeVoiceMode = null;
+    autoVoiceSessionId = null;
+    autoVoiceExchange = null;
+    els.autoVoiceBtn.textContent = "进入对话模式";
+    els.autoVoiceBtn.classList.remove("recording");
+    els.autoVoiceStatus.textContent = "手动录音";
+    els.recordBtn.disabled = false;
+    els.sendTextBtn.disabled = false;
+    els.recordingTime.textContent = "00:00";
+    if (!appMode.web_only) {
+        els.playbackTestBtn.disabled = false;
+    }
+    setStatus("已退出自动对话模式");
+}
+
+function handleAutoVoiceEvent(event, data) {
+    appendEventLog(`auto:${event}`, data);
+    if (event === "state") {
+        els.autoVoiceStatus.textContent = autoVoiceStateText(data.state);
+        setStatus(`自动对话：${autoVoiceStateText(data.state)}`);
+        return;
+    }
+    if (event === "level") {
+        renderMicLevel({
+            rms: data.rms,
+            peak: data.peak,
+            level: clamp01(Number(data.speech_probability || 0)),
+        });
+        return;
+    }
+    if (event === "speech_start") {
+        autoVoiceExchange = createAutoVoiceExchange("(正在说话...)");
+        els.liveTranscript.textContent = "检测到语音，正在听...";
+        return;
+    }
+    if (event === "speech_cancelled") {
+        els.liveTranscript.textContent = "语音太短，继续听...";
+        autoVoiceExchange = null;
+        return;
+    }
+    if (event === "utterance") {
+        els.autoVoiceStatus.textContent = "正在识别";
+        return;
+    }
+    if (event === "transcript") {
+        const text = data.transcript || data.text || "";
+        const exchange = ensureAutoVoiceExchange(text || "(未识别到文本)");
+        if (exchange.userMessage) {
+            exchange.userMessage.content = text || "(未识别到文本)";
+        }
+        els.transcript.textContent = text || "(未识别到文本)";
+        els.liveTranscript.textContent = text || "正在识别...";
+        renderTimeline();
+        return;
+    }
+    if (event === "meta") {
+        const exchange = ensureAutoVoiceExchange(autoVoiceExchange?.transcript || "(语音输入)");
+        bindRequestToExchange(data, {
+            userMessageId: exchange.userMessage.id,
+            assistantMessageId: exchange.assistantMessage.id,
+        });
+        return;
+    }
+    if (event === "delta") {
+        const exchange = ensureAutoVoiceExchange(autoVoiceExchange?.transcript || "(语音输入)");
+        const assistant = exchange.assistantMessage;
+        const delta = data.delta || "";
+        assistant.content += delta;
+        assistant.status = "streaming";
+        autoVoiceExchange.reply = assistant.content;
+        els.reply.textContent = assistant.content || " ";
+        renderTimeline();
+        return;
+    }
+    if (event === "audio") {
+        if (currentVoiceMode() === "local") {
+            autoVoiceExchange = autoVoiceExchange || {};
+            autoVoiceExchange.playbackKey = localAudioPlaybackScheduler.enqueueAudio(
+                data,
+                {
+                    fallbackKey:
+                        autoVoiceExchange.playbackKey
+                        || autoVoiceExchange.playbackFallbackKey
+                        || makeId("auto-local-audio"),
+                },
+            );
+        }
+        return;
+    }
+    if (event === "behavior") {
+        setStatus(formatBehaviorStatus(data));
+        return;
+    }
+    if (event === "done") {
+        const exchange = ensureAutoVoiceExchange(data.transcript || "(语音输入)");
+        if (data.transcript) {
+            exchange.userMessage.content = data.transcript;
+            els.transcript.textContent = data.transcript;
+        }
+        exchange.assistantMessage.content = data.reply || exchange.assistantMessage.content || "(没有回复)";
+        exchange.assistantMessage.status = "done";
+        exchange.assistantMessage.retrievalStatus = "pending";
+        bindRequestToExchange(data, {
+            userMessageId: exchange.userMessage.id,
+            assistantMessageId: exchange.assistantMessage.id,
+        });
+        if (currentVoiceMode() === "local") {
+            autoVoiceExchange.playbackKey = localAudioPlaybackScheduler.complete(
+                data,
+                {
+                    fallbackKey:
+                        autoVoiceExchange.playbackKey
+                        || autoVoiceExchange.playbackFallbackKey
+                        || makeId("auto-local-audio"),
+                },
+            );
+        }
+        els.reply.textContent = exchange.assistantMessage.content;
+        renderTimeline();
+        return;
+    }
+    if (event === "playback_done") {
+        autoVoiceExchange = null;
+        els.autoVoiceStatus.textContent = "正在听";
+        return;
+    }
+    if (event === "warning") {
+        setStatus(data.message || "自动对话警告");
+        return;
+    }
+    if (event === "error") {
+        if (autoVoiceExchange?.assistantMessage?.id) {
+            markMessageError(autoVoiceExchange.assistantMessage.id, data.message || "自动对话失败");
+        }
+        setStatus(data.message || "自动对话失败");
+    }
+}
+
+function createAutoVoiceExchange(text) {
+    const exchange = createExchange({
+        userText: text,
+        source: "voice",
+    });
+    exchange.transcript = text;
+    exchange.reply = "";
+    exchange.playbackFallbackKey = makeId("auto-local-audio");
+    autoVoiceExchange = exchange;
+    return exchange;
+}
+
+function ensureAutoVoiceExchange(text) {
+    if (autoVoiceExchange?.userMessage && autoVoiceExchange?.assistantMessage) {
+        if (text && autoVoiceExchange.userMessage.content === "(正在说话...)") {
+            autoVoiceExchange.userMessage.content = text;
+        }
+        autoVoiceExchange.transcript = text || autoVoiceExchange.transcript || "";
+        return autoVoiceExchange;
+    }
+    return createAutoVoiceExchange(text || "(语音输入)");
+}
+
+function autoVoiceStateText(state) {
+    const labels = {
+        starting: "正在启动",
+        listening: "正在听",
+        user_speaking: "你正在说话",
+        transcribing: "正在识别",
+        assistant_streaming: "正在回答",
+        speaking: "正在播放",
+        cooldown: "准备继续听",
+        error: "出错",
+        stopped: "已停止",
+    };
+    return labels[state] || state || "未知";
 }
 
 async function renderDialogueStream(response, options = {}) {
@@ -1848,6 +2202,10 @@ els.healthBtn.addEventListener("click", () => {
 
 els.recordBtn.addEventListener("click", () => {
     toggleRecording().catch((error) => setStatus(error.message || String(error)));
+});
+
+els.autoVoiceBtn.addEventListener("click", () => {
+    toggleAutoVoice().catch((error) => setStatus(error.message || String(error)));
 });
 
 els.localAbortBtn.addEventListener("click", () => {

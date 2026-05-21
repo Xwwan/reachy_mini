@@ -25,6 +25,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from reachy_mini import ReachyMini, ReachyMiniApp
 
+from .auto_voice import AutoVoiceConfig, AutoVoiceManager
+from .vad import VadConfig
+
 try:
     import yaml
 except ImportError:  # pragma: no cover - dependency is declared in pyproject.
@@ -37,6 +40,9 @@ DEFAULT_EMOJI_SERVICE_URL = "http://127.0.0.1:8001"
 DEFAULT_BEHAVIOR_CONFIG_FILE = Path(__file__).resolve().parent / "behavior_config.yaml"
 DEFAULT_EMOJI_CONFIG_FILE = Path(__file__).resolve().parent / "emoji_config.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_VAD_MODEL_FILE = (
+    REPO_ROOT / "reachy_dialogue_app" / "models" / "silero_vad.onnx"
+)
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 DEFAULT_ROBOT_PORT = 8000
@@ -218,6 +224,110 @@ class RobotAudioPlaybackScheduler:
 
             self.order.pop(0)
             self.groups.pop(key, None)
+
+
+def _auto_voice_model_path() -> Path:
+    return Path(
+        os.environ.get("REACHY_DIALOGUE_VAD_MODEL") or DEFAULT_VAD_MODEL_FILE
+    ).expanduser()
+
+
+def _auto_voice_config() -> AutoVoiceConfig:
+    vad = VadConfig(
+        speech_threshold=float(os.environ.get("REACHY_DIALOGUE_VAD_THRESHOLD", "0.5")),
+        min_speech_ms=int(os.environ.get("REACHY_DIALOGUE_VAD_MIN_SPEECH_MS", "250")),
+        min_silence_ms=int(os.environ.get("REACHY_DIALOGUE_VAD_MIN_SILENCE_MS", "900")),
+        pre_roll_ms=int(os.environ.get("REACHY_DIALOGUE_VAD_PRE_ROLL_MS", "300")),
+        post_roll_ms=int(os.environ.get("REACHY_DIALOGUE_VAD_POST_ROLL_MS", "250")),
+        max_utterance_ms=int(
+            os.environ.get("REACHY_DIALOGUE_VAD_MAX_UTTERANCE_MS", "15000")
+        ),
+        cooldown_ms=int(os.environ.get("REACHY_DIALOGUE_VAD_COOLDOWN_MS", "400")),
+    )
+    return AutoVoiceConfig(vad=vad)
+
+
+def _auto_voice_stream_hook_factory(
+    playback_scheduler: RobotAudioPlaybackScheduler | None,
+    behavior_config: dict[str, Any],
+) -> Callable[
+    [str],
+    Callable[
+        [str, dict[str, Any]],
+        tuple[list[tuple[str, dict[str, Any]]], threading.Event | None],
+    ],
+]:
+    def factory(session_id: str):
+        playback_key = _new_playback_key(f"auto-voice-{session_id}")
+
+        def hook(
+            event: str,
+            data: dict[str, Any],
+        ) -> tuple[list[tuple[str, dict[str, Any]]], threading.Event | None]:
+            extras: list[tuple[str, dict[str, Any]]] = []
+            if event == "audio":
+                audio_base64 = data.get("audio_base64")
+                if (
+                    playback_scheduler is not None
+                    and isinstance(audio_base64, str)
+                    and audio_base64
+                ):
+                    playback_scheduler.enqueue_audio(
+                        playback_key,
+                        audio_base64=audio_base64,
+                        sample_rate=int(
+                            data.get("sample_rate")
+                            or data.get("audio_sample_rate")
+                            or OUTPUT_SAMPLE_RATE
+                        ),
+                        chunk_index=_optional_int(data.get("chunk_index")),
+                        segment_index=_optional_int(data.get("segment_index")),
+                    )
+                return extras, None
+
+            if event != "done":
+                return extras, None
+
+            behavior_results = _trigger_behaviors_from_text(
+                str(data.get("reply") or ""),
+                behavior_config,
+            )
+            for result in behavior_results:
+                extras.append(("behavior", _behavior_result_payload(result)))
+
+            audio_base64 = data.get("audio_base64")
+            if (
+                playback_scheduler is not None
+                and isinstance(audio_base64, str)
+                and audio_base64
+            ):
+                playback_scheduler.enqueue_audio(
+                    playback_key,
+                    audio_base64=audio_base64,
+                    sample_rate=int(
+                        data.get("sample_rate")
+                        or data.get("audio_sample_rate")
+                        or OUTPUT_SAMPLE_RATE
+                    ),
+                    chunk_index=_optional_int(data.get("chunk_index")),
+                    segment_index=_optional_int(data.get("segment_index")),
+                )
+
+            if playback_scheduler is None:
+                return extras, None
+
+            done_event = threading.Event()
+            playback_scheduler.complete(
+                playback_key,
+                action_signal=_first_ok_module_key(behavior_results, "action"),
+                action_config=_module_config(behavior_config, "action"),
+                done_event=done_event,
+            )
+            return extras, done_event
+
+        return hook
+
+    return factory
 
 
 class FollowupStreamHub:
@@ -411,6 +521,22 @@ class LocalMicFinishStreamPayload(BaseModel):
 
 
 class LocalMicAbortPayload(BaseModel):
+    session_id: str
+
+
+class AutoVoiceStartPayload(BaseModel):
+    input_mode: str
+    conversation_id: str | None = None
+    tts_enabled: bool = True
+
+
+class AutoVoiceChunkPayload(BaseModel):
+    session_id: str
+    audio_base64: str
+    sample_rate: int = INPUT_SAMPLE_RATE
+
+
+class AutoVoiceStopPayload(BaseModel):
     session_id: str
 
 
@@ -1164,6 +1290,21 @@ class ReachyDialogueApp(ReachyMiniApp):
         recorder = RobotMicRecorder(reachy_mini)
         playback_tester = RobotMicPlaybackTester(reachy_mini)
         behavior_config = _load_behavior_config()
+        auto_voice_manager = AutoVoiceManager(
+            model_path=_auto_voice_model_path(),
+            config=_auto_voice_config(),
+            service_url_getter=lambda: _snapshot(settings, settings_lock)[
+                "service_url"
+            ],
+            robot_audio_source=lambda: (
+                reachy_mini.media.get_audio_sample(),
+                reachy_mini.media.get_input_audio_samplerate(),
+            ),
+            stream_hook_factory=_auto_voice_stream_hook_factory(
+                playback_scheduler,
+                behavior_config,
+            ),
+        )
         _register_local_mic_routes(
             self.settings_app,
             settings,
@@ -1277,6 +1418,13 @@ class ReachyDialogueApp(ReachyMiniApp):
             settings_lock,
             playback_scheduler=playback_scheduler,
             behavior_config=behavior_config,
+        )
+        _register_auto_voice_routes(
+            self.settings_app,
+            settings,
+            settings_lock,
+            auto_voice_manager,
+            allow_robot=True,
         )
 
         @self.settings_app.get("/api/audio-volume")
@@ -2073,6 +2221,111 @@ def _register_followup_routes(
         return _json_or_error(response)
 
 
+def _register_auto_voice_routes(
+    app: FastAPI,
+    settings: dict[str, Any],
+    settings_lock: threading.Lock,
+    manager: AutoVoiceManager,
+    *,
+    allow_robot: bool,
+) -> None:
+    @app.get("/api/auto-voice/config")
+    def auto_voice_config() -> dict[str, Any]:
+        return {
+            "model_path": str(manager.model_path),
+            "model_exists": manager.model_path.exists(),
+            "vad": manager.config.vad.__dict__,
+            "allow_robot": allow_robot,
+        }
+
+    @app.post("/api/auto-voice/start")
+    def auto_voice_start(payload: AutoVoiceStartPayload) -> dict[str, Any]:
+        if payload.input_mode not in {"local", "robot"}:
+            raise HTTPException(
+                status_code=422,
+                detail="input_mode must be 'local' or 'robot'.",
+            )
+        if payload.input_mode == "robot" and not allow_robot:
+            raise HTTPException(
+                status_code=422,
+                detail="web-only 模式不能使用机器人麦克风自动对话。",
+            )
+        current = _snapshot(settings, settings_lock)
+        conversation_id = (
+            payload.conversation_id or current["conversation_id"] or DEFAULT_CONVERSATION_ID
+        ).strip()
+        try:
+            session = manager.start(
+                mode=payload.input_mode,  # type: ignore[arg-type]
+                conversation_id=conversation_id,
+                tts_enabled=payload.tts_enabled,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        snapshot = session.snapshot()
+        return {
+            "session_id": snapshot.session_id,
+            "input_mode": snapshot.mode,
+            "state": snapshot.state,
+            "conversation_id": snapshot.conversation_id,
+            "tts_enabled": snapshot.tts_enabled,
+            "vad": manager.config.vad.__dict__,
+            "model_path": str(manager.model_path),
+        }
+
+    @app.post("/api/auto-voice/chunk")
+    def auto_voice_chunk(payload: AutoVoiceChunkPayload) -> dict[str, Any]:
+        try:
+            session = manager.get(payload.session_id)
+            session.submit_pcm16_base64(payload.audio_base64, payload.sample_rate)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="auto voice session not found") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"ok": True, "session_id": payload.session_id}
+
+    @app.get("/api/auto-voice/events")
+    def auto_voice_events(session_id: str) -> StreamingResponse:
+        try:
+            session = manager.get(session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="auto voice session not found") from exc
+
+        def event_stream():
+            try:
+                for event, data in session.event_stream():
+                    yield _sse_frame(event, data)
+            finally:
+                # EventSource disconnects should not leave a hidden listener alive forever.
+                pass
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/auto-voice/state")
+    def auto_voice_state(session_id: str) -> dict[str, Any]:
+        try:
+            return manager.snapshot(session_id).__dict__
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="auto voice session not found") from exc
+
+    @app.post("/api/auto-voice/stop")
+    def auto_voice_stop(payload: AutoVoiceStopPayload) -> dict[str, Any]:
+        try:
+            manager.stop(payload.session_id)
+        except KeyError:
+            return {"ok": True, "session_id": payload.session_id, "already_stopped": True}
+        return {"ok": True, "session_id": payload.session_id}
+
+
 def _register_local_mic_routes(
     app: FastAPI,
     settings: dict[str, Any],
@@ -2207,6 +2460,15 @@ def _build_web_only_app() -> FastAPI:
     settings = _default_settings()
     behavior_config = _load_behavior_config()
     _disable_behavior_module(behavior_config, "action")
+    auto_voice_manager = AutoVoiceManager(
+        model_path=_auto_voice_model_path(),
+        config=_auto_voice_config(),
+        service_url_getter=lambda: _snapshot(settings, settings_lock)["service_url"],
+        stream_hook_factory=_auto_voice_stream_hook_factory(
+            None,
+            behavior_config,
+        ),
+    )
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -2226,6 +2488,13 @@ def _build_web_only_app() -> FastAPI:
         settings,
         settings_lock,
         behavior_config=behavior_config,
+    )
+    _register_auto_voice_routes(
+        app,
+        settings,
+        settings_lock,
+        auto_voice_manager,
+        allow_robot=False,
     )
     _register_local_mic_routes(
         app,
