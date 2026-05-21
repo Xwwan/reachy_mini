@@ -1,0 +1,21 @@
+from pathlib import Path
+
+
+DEFAULT_SERVICE_URL = "http://127.0.0.1:12312"
+DEFAULT_CONVERSATION_ID = "reachy-mini-voice"
+DEFAULT_EMOJI_SERVICE_URL = "http://127.0.0.1:8001"
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_BEHAVIOR_CONFIG_FILE = PACKAGE_ROOT / "behavior_config.yaml"
+DEFAULT_EMOJI_CONFIG_FILE = PACKAGE_ROOT / "emoji_config.json"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_VAD_MODEL_FILE = (
+    REPO_ROOT / "reachy_dialogue_app" / "models" / "silero_vad.onnx"
+)
+INPUT_SAMPLE_RATE = 16000
+OUTPUT_SAMPLE_RATE = 24000
+DEFAULT_ROBOT_PORT = 8000
+MIN_RECORDING_DURATION_SECONDS = 0.3
+MIN_RECORDING_RMS = 0.0002
+LIVE_CHUNK_BYTES = 5120
+ROBOT_MIC_READY_TIMEOUT_SECONDS = 1.0
+ROBOT_MIC_POLL_SECONDS = 0.005

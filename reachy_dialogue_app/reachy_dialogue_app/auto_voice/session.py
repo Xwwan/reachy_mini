@@ -4,54 +4,29 @@ import base64
 import queue
 import threading
 import time
-import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, Iterable
 from urllib.parse import urljoin
 
 import numpy as np
 import requests
 
-from .vad import (
-    SILERO_SAMPLE_RATE,
+from ..vad import (
     SileroVad,
     UtteranceSegmenter,
-    VadConfig,
     float_to_pcm16_base64,
     normalize_audio_sample,
     pcm16_bytes_to_float,
 )
-
-
-AutoVoiceMode = Literal["local", "robot"]
-RobotAudioSource = Callable[[], tuple[np.ndarray | None, int]]
-StreamHook = Callable[[str, dict[str, Any]], tuple[list[tuple[str, dict[str, Any]]], threading.Event | None]]
-StreamHookFactory = Callable[[str], StreamHook]
-
-
-@dataclass
-class AutoVoiceConfig:
-    vad: VadConfig
-    input_gain: float = 1.0
-    local_chunk_queue_size: int = 80
-    robot_poll_seconds: float = 0.01
-    transcript_poll_seconds: float = 0.3
-    service_timeout_seconds: int = 120
-
-
-@dataclass
-class AutoVoiceSnapshot:
-    session_id: str
-    mode: AutoVoiceMode
-    state: str
-    conversation_id: str
-    tts_enabled: bool
-    utterance_count: int
-    last_error: str | None
-    speech_probability: float
-    rms: float
-    peak: float
+from .sse import audio_duration_from_payload, iter_sse_events, json_or_error
+from .types import (
+    AutoVoiceConfig,
+    AutoVoiceMode,
+    AutoVoiceSnapshot,
+    RobotAudioSource,
+    StreamHook,
+)
 
 
 class AutoVoiceSession:
@@ -467,128 +442,3 @@ class AutoVoiceSession:
         self.events.put((event, payload))
 
 
-class AutoVoiceManager:
-    def __init__(
-        self,
-        *,
-        model_path: Path,
-        config: AutoVoiceConfig,
-        service_url_getter: Callable[[], str],
-        robot_audio_source: RobotAudioSource | None = None,
-        stream_hook_factory: StreamHookFactory | None = None,
-    ) -> None:
-        self.model_path = model_path
-        self.config = config
-        self.service_url_getter = service_url_getter
-        self.robot_audio_source = robot_audio_source
-        self.stream_hook_factory = stream_hook_factory
-        self.lock = threading.Lock()
-        self.sessions: dict[str, AutoVoiceSession] = {}
-
-    def start(
-        self,
-        *,
-        mode: AutoVoiceMode,
-        conversation_id: str,
-        tts_enabled: bool,
-    ) -> AutoVoiceSession:
-        session_id = f"auto_{uuid.uuid4().hex}"
-        session = AutoVoiceSession(
-            session_id=session_id,
-            mode=mode,
-            service_url=self.service_url_getter(),
-            conversation_id=conversation_id,
-            tts_enabled=tts_enabled,
-            model_path=self.model_path,
-            config=self.config,
-            robot_audio_source=self.robot_audio_source,
-            stream_hook=(
-                self.stream_hook_factory(session_id)
-                if self.stream_hook_factory is not None
-                else None
-            ),
-        )
-        with self.lock:
-            self.sessions[session_id] = session
-        return session
-
-    def get(self, session_id: str) -> AutoVoiceSession:
-        with self.lock:
-            session = self.sessions.get(session_id)
-        if session is None:
-            raise KeyError(session_id)
-        return session
-
-    def stop(self, session_id: str) -> None:
-        session = self.get(session_id)
-        session.stop()
-        with self.lock:
-            self.sessions.pop(session_id, None)
-
-    def snapshot(self, session_id: str) -> AutoVoiceSnapshot:
-        return self.get(session_id).snapshot()
-
-
-def audio_duration_from_payload(data: dict[str, Any]) -> float:
-    audio_base64 = data.get("audio_base64")
-    if not isinstance(audio_base64, str) or not audio_base64:
-        return 0.0
-    sample_rate = int(data.get("sample_rate") or data.get("audio_sample_rate") or 24000)
-    try:
-        audio_bytes = base64.b64decode(audio_base64)
-    except Exception:
-        return 0.0
-    return len(audio_bytes) / max(1.0, 2.0 * float(sample_rate))
-
-
-def iter_sse_events(response: requests.Response):
-    if not response.ok:
-        json_or_error(response)
-    event = "message"
-    data_lines: list[str] = []
-    for raw_line in response.iter_lines(decode_unicode=True):
-        if raw_line is None:
-            continue
-        line = raw_line.rstrip("\r")
-        if line == "":
-            if data_lines:
-                yield event, decode_sse_json("\n".join(data_lines))
-            event = "message"
-            data_lines = []
-            continue
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event = line[len("event:") :].strip() or "message"
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-    if data_lines:
-        yield event, decode_sse_json("\n".join(data_lines))
-
-
-def decode_sse_json(payload: str) -> dict[str, Any]:
-    import json
-
-    try:
-        data = json.loads(payload)
-    except json.JSONDecodeError:
-        return {"text": payload}
-    if isinstance(data, dict):
-        return data
-    return {"value": data}
-
-
-def json_or_error(response: requests.Response) -> dict[str, Any]:
-    try:
-        data = response.json()
-    except ValueError as exc:
-        if response.ok:
-            return {}
-        raise RuntimeError(response.text or response.reason) from exc
-    if not response.ok:
-        detail = data.get("detail") if isinstance(data, dict) else None
-        raise RuntimeError(str(detail or data or response.reason))
-    if isinstance(data, dict):
-        return data
-    return {"value": data}
