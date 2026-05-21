@@ -2,21 +2,20 @@ import json
 import logging
 import os
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import mpv
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from terminal_animation import AnimationClip, run_curses
 
 EMOTIONS = ['不屑', '愤怒', '惊恐', '难过', '兴奋', '静态']
 DEFAULT_EMOTION = '静态'
 CONFIG_ENV = 'REACHY_EMOJI_CONFIG'
 DEBUG_ENV = 'REACHY_EMOJI_DEBUG'
 DEBUG_LOG_ENV = 'REACHY_EMOJI_DEBUG_LOG'
-VIDEO_ROOT = Path(__file__).resolve().parent / 'videos'
+ANIMATION_ROOT = Path(__file__).resolve().parent / 'animations'
 DEFAULT_CONFIG = Path(__file__).resolve().parent / 'config.json'
 
 current_emotion = DEFAULT_EMOTION
@@ -31,7 +30,7 @@ def _log():
 
 
 @dataclass(frozen=True)
-class EmotionFiles:
+class EmotionClips:
     entry: Path
     loop: Path
     exit: Path
@@ -56,7 +55,7 @@ def _load_config():
 
 
 def _pick_static_variant_dir(config):
-    base_dir = VIDEO_ROOT / '静态'
+    base_dir = ANIMATION_ROOT / '静态'
     preferred = config.get('static_variant')
     if preferred:
         preferred_dir = base_dir / preferred
@@ -70,78 +69,51 @@ def _pick_static_variant_dir(config):
     return base_dir, '静态'
 
 
-def _resolve_emotion_files(emotion, config):
+def _resolve_emotion_clips(emotion, config):
     if emotion not in EMOTIONS:
         raise ValueError(f'Unknown emotion: {emotion}')
 
     if emotion == '静态':
         emotion_dir, prefix = _pick_static_variant_dir(config)
     else:
-        emotion_dir = VIDEO_ROOT / emotion
+        emotion_dir = ANIMATION_ROOT / emotion
         prefix = emotion
 
-    entry = emotion_dir / f'{prefix}_1进入姿势.mp4'
-    loop = emotion_dir / f'{prefix}_2可循环动作.mp4'
-    exit = emotion_dir / f'{prefix}_3回正.mp4'
+    entry = emotion_dir / f'{prefix}_1进入姿势.tanim.json.gz'
+    loop = emotion_dir / f'{prefix}_2可循环动作.tanim.json.gz'
+    exit = emotion_dir / f'{prefix}_3回正.tanim.json.gz'
 
     missing = [path for path in (entry, loop, exit) if not path.exists()]
     if missing:
         missing_names = ', '.join(str(path) for path in missing)
-        raise FileNotFoundError(f'Missing emotion video(s): {missing_names}')
+        raise FileNotFoundError(f'Missing terminal animation asset(s): {missing_names}')
 
-    return EmotionFiles(entry=entry, loop=loop, exit=exit)
+    return EmotionClips(entry=entry, loop=loop, exit=exit)
 
 
 def _load_emotions(config):
-    return {emotion: _resolve_emotion_files(emotion, config) for emotion in EMOTIONS}
+    return {emotion: _resolve_emotion_clips(emotion, config) for emotion in EMOTIONS}
 
 
-def _create_player():
-    return mpv.MPV(
-        vo='tct',
-        audio='no',
-        osd_level=0,
-        term_osd='no',
-        keep_open='yes',
-    )
+def _load_clip(path, cache):
+    clip = cache.get(path)
+    if clip is None:
+        _log().debug('Load terminal animation asset: %s', path)
+        clip = AnimationClip.load(path)
+        cache[path] = clip
+    return clip
 
 
-def _play_once(player, path):
+def _play_once(renderer, path, cache):
     _log().debug('Play once: %s', path)
-    player.loop_file = 'no'
-    player.command('loadfile', str(path), 'replace')
-    player.pause = False
-    started = False
-    duration = None
-    start_time = time.monotonic()
-    while not _stop_event.is_set():
-        time_pos = getattr(player, 'time_pos', None)
-        if time_pos is not None:
-            started = True
-        if duration is None:
-            duration = getattr(player, 'duration', None)
-        if duration is not None and time_pos is not None and time_pos >= max(duration - 0.05, 0):
-            return
-        if started and getattr(player, 'core_idle', False):
-            _log().debug('Play once finished by idle: %s', path)
-            return
-        if time.monotonic() - start_time > 30:
-            _log().warning('Play once timeout: %s', path)
-            return
-        _stop_event.wait(timeout=0.05)
+    renderer.play_once(_load_clip(path, cache), _stop_event)
 
 
-def _play_loop_until_change(player, path):
+def _play_loop_until_change(renderer, path, cache):
     _log().debug('Play loop: %s', path)
-    player.loop_file = 'inf'
-    player.command('loadfile', str(path), 'replace')
-    while not _stop_event.is_set():
-        if _pending_event.wait(timeout=0.1):
-            _log().debug('Loop interrupted for switch')
-            return
-        if getattr(player, 'core_idle', False):
-            player.command('loadfile', str(path), 'replace')
-        _stop_event.wait(timeout=0.05)
+    renderer.play_loop_until_event(_load_clip(path, cache), _stop_event, _pending_event)
+    if _pending_event.is_set():
+        _log().debug('Loop interrupted for switch')
 
 
 def change_emotion(emotion):
@@ -220,7 +192,7 @@ def _create_app():
 
 def _start_server_thread(host, port):
     app = _create_app()
-    config = uvicorn.Config(app, host=host, port=port, log_level='info', access_log=False)
+    config = uvicorn.Config(app, host=host, port=port, log_level='warning', access_log=False)
     server = uvicorn.Server(config)
 
     thread = threading.Thread(target=server.run, name='reachy-emoji-api', daemon=True)
@@ -244,26 +216,26 @@ def main():
     port = int(server_cfg.get('port', 8001))
     _start_server_thread(host, port)
 
-    emotion_files = _load_emotions(config)
-    player = _create_player()
+    emotion_clips = _load_emotions(config)
 
-    try:
+    def render_loop(renderer):
+        clip_cache = {}
         start_emotion = config.get('default_emotion', DEFAULT_EMOTION)
         if start_emotion not in EMOTIONS:
             raise ValueError(f'Unknown emotion: {start_emotion}')
         _set_current_emotion(start_emotion)
         while not _stop_event.is_set():
-            files = emotion_files[current_emotion]
-            _play_once(player, files.entry)
+            clips = emotion_clips[current_emotion]
+            _play_once(renderer, clips.entry, clip_cache)
             _log().debug('After entry: pending=%s current=%s', _pending_emotion, current_emotion)
             if _pending_event.is_set():
                 _log().debug('Skip loop due to pending switch')
-                _play_once(player, files.exit)
+                _play_once(renderer, clips.exit, clip_cache)
                 next_emotion = _consume_pending()
                 if next_emotion and next_emotion != current_emotion:
                     _set_current_emotion(next_emotion)
                 continue
-            _play_loop_until_change(player, files.loop)
+            _play_loop_until_change(renderer, clips.loop, clip_cache)
 
             if _stop_event.is_set():
                 break
@@ -272,10 +244,15 @@ def main():
             if not next_emotion or next_emotion == current_emotion:
                 continue
 
-            _play_once(player, files.exit)
+            _play_once(renderer, clips.exit, clip_cache)
             _set_current_emotion(next_emotion)
+
+    try:
+        run_curses(render_loop)
+    except KeyboardInterrupt:
+        _log().info('Stopping terminal animation')
     finally:
-        player.terminate()
+        _stop_event.set()
 
 
 if __name__ == '__main__':
