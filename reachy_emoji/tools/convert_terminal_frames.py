@@ -15,7 +15,7 @@ def parse_args():
     )
     parser.add_argument('--source-root', type=Path, default=Path('videos'))
     parser.add_argument('--output-root', type=Path, default=Path('animations'))
-    parser.add_argument('--width', type=int, default=64)
+    parser.add_argument('--width', type=int, default=48)
     parser.add_argument('--pixel-height', type=int, default=48)
     parser.add_argument('--fps', type=float, default=12.0)
     parser.add_argument('--threshold', type=int, default=48)

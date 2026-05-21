@@ -31,12 +31,12 @@ Linux 上的 Python 通常自带 `curses`。当前运行链路不需要 `python-
 python3 tools/convert_terminal_frames.py
 ```
 
-该脚本会调用系统 `ffmpeg` 解码 mp4，并生成 `.tanim.json.gz` 文件；主程序不会调用它。默认生成 `64 x 24` 个终端字符单元，单元内部使用 `▀`、`▄`、`█` 表达两行黑白像素。
+该脚本会调用系统 `ffmpeg` 解码 mp4，并生成 `.tanim.json.gz` 文件；主程序不会调用它。默认从方形素材采样为 `48 x 48` 个黑白像素，再生成 `48 x 24` 个终端字符单元，单元内部使用 `▀`、`▄`、`█` 表达两行黑白像素。这个比例会补偿常见终端字符单元的纵向高度，让圆形不容易被横向拉宽。
 
 常用调节参数：
 
 ```bash
-python3 tools/convert_terminal_frames.py --width 80 --pixel-height 60 --fps 15 --threshold 48
+python3 tools/convert_terminal_frames.py --width 64 --pixel-height 64 --fps 15 --threshold 48
 ```
 
 ## 运行方式
