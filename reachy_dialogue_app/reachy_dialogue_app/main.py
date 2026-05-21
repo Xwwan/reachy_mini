@@ -10,10 +10,11 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urljoin
 
 import numpy as np
@@ -49,10 +50,267 @@ ROBOT_MIC_POLL_SECONDS = 0.005
 @dataclass
 class RobotJob:
     audio_base64: str | None = None
+    audio_bytes: bytes | None = None
     audio_sample_rate: int = OUTPUT_SAMPLE_RATE
     action_signal: str | None = None
     action_config: dict[str, Any] | None = None
     done_event: threading.Event | None = None
+
+
+@dataclass
+class RobotAudioChunk:
+    audio_bytes: bytes
+    sample_rate: int
+    chunk_index: int | None
+    segment_index: int | None
+    arrival_index: int
+
+
+@dataclass
+class RobotAudioPlaybackGroup:
+    key: str
+    chunks: list[RobotAudioChunk]
+    completed: bool = False
+    emitted_count: int = 0
+    final_job_queued: bool = False
+    action_signal: str | None = None
+    action_config: dict[str, Any] | None = None
+    done_event: threading.Event | None = None
+
+
+class RobotAudioPlaybackScheduler:
+    """Stream the current reply immediately while buffering later replies."""
+
+    def __init__(self, jobs: queue.Queue[RobotJob]) -> None:
+        self.jobs = jobs
+        self.lock = threading.Lock()
+        self.groups: dict[str, RobotAudioPlaybackGroup] = {}
+        self.order: list[str] = []
+        self.arrival_index = 0
+
+    def enqueue_audio(
+        self,
+        key: str | None,
+        *,
+        audio_base64: str,
+        sample_rate: int,
+        chunk_index: int | None = None,
+        segment_index: int | None = None,
+    ) -> str:
+        playback_key = key or _new_playback_key("robot-audio")
+        audio_bytes = base64.b64decode(audio_base64)
+        with self.lock:
+            group = self._group_locked(playback_key)
+            self.arrival_index += 1
+            group.chunks.append(
+                RobotAudioChunk(
+                    audio_bytes=audio_bytes,
+                    sample_rate=sample_rate,
+                    chunk_index=chunk_index,
+                    segment_index=segment_index,
+                    arrival_index=self.arrival_index,
+                )
+            )
+            self._drain_locked()
+        return playback_key
+
+    def complete(
+        self,
+        key: str | None,
+        *,
+        action_signal: str | None = None,
+        action_config: dict[str, Any] | None = None,
+        done_event: threading.Event | None = None,
+    ) -> str:
+        playback_key = key or _new_playback_key("robot-audio")
+        with self.lock:
+            group = self._group_locked(playback_key)
+            group.completed = True
+            group.action_signal = action_signal
+            group.action_config = action_config
+            group.done_event = done_event
+            self._drain_locked()
+        return playback_key
+
+    def submit_complete(
+        self,
+        *,
+        audio_base64: str | None = None,
+        audio_sample_rate: int = OUTPUT_SAMPLE_RATE,
+        action_signal: str | None = None,
+        action_config: dict[str, Any] | None = None,
+        done_event: threading.Event | None = None,
+        key: str | None = None,
+    ) -> str:
+        playback_key = key or _new_playback_key("robot-audio")
+        if audio_base64:
+            self.enqueue_audio(
+                playback_key,
+                audio_base64=audio_base64,
+                sample_rate=audio_sample_rate,
+            )
+        return self.complete(
+            playback_key,
+            action_signal=action_signal,
+            action_config=action_config,
+            done_event=done_event,
+        )
+
+    def abort(self, key: str | None) -> None:
+        if not key:
+            return
+        with self.lock:
+            self.groups.pop(key, None)
+            self.order = [queued_key for queued_key in self.order if queued_key != key]
+            self._drain_locked()
+
+    def _group_locked(self, key: str) -> RobotAudioPlaybackGroup:
+        group = self.groups.get(key)
+        if group is None:
+            group = RobotAudioPlaybackGroup(key=key, chunks=[])
+            self.groups[key] = group
+            self.order.append(key)
+        return group
+
+    def _drain_locked(self) -> None:
+        while self.order:
+            key = self.order[0]
+            group = self.groups.get(key)
+            if group is None:
+                self.order.pop(0)
+                continue
+
+            if group.emitted_count == 0 and len(group.chunks) > 1:
+                group.chunks.sort(
+                    key=lambda chunk: (
+                        chunk.segment_index
+                        if chunk.segment_index is not None
+                        else 0,
+                        chunk.chunk_index
+                        if chunk.chunk_index is not None
+                        else chunk.arrival_index,
+                        chunk.arrival_index,
+                    )
+                )
+            while group.emitted_count < len(group.chunks):
+                chunk = group.chunks[group.emitted_count]
+                group.emitted_count += 1
+                self.jobs.put(
+                    RobotJob(
+                        audio_bytes=chunk.audio_bytes,
+                        audio_sample_rate=chunk.sample_rate,
+                    )
+                )
+
+            if not group.completed:
+                return
+
+            if not group.final_job_queued:
+                group.final_job_queued = True
+                if group.action_signal or group.done_event is not None:
+                    self.jobs.put(
+                        RobotJob(
+                            action_signal=group.action_signal,
+                            action_config=group.action_config,
+                            done_event=group.done_event,
+                        )
+                    )
+
+            self.order.pop(0)
+            self.groups.pop(key, None)
+
+
+class FollowupStreamHub:
+    def __init__(
+        self,
+        on_upstream_event: Callable[[tuple[str, str, bool], dict], None] | None = None,
+    ) -> None:
+        self.on_upstream_event = on_upstream_event
+        self.lock = threading.Lock()
+        self.subscribers: dict[tuple[str, str, bool], set[queue.Queue[dict]]] = {}
+        self.threads: dict[tuple[str, str, bool], threading.Thread] = {}
+
+    def subscribe(
+        self,
+        *,
+        service_url: str,
+        conversation_id: str,
+        tts_enabled: bool,
+    ):
+        key = (_normalize_service_url(service_url), conversation_id, bool(tts_enabled))
+        subscriber: queue.Queue[dict] = queue.Queue()
+        with self.lock:
+            subscribers = self.subscribers.setdefault(key, set())
+            subscribers.add(subscriber)
+            thread = self.threads.get(key)
+            if thread is None or not thread.is_alive():
+                thread = threading.Thread(
+                    target=self._run_upstream,
+                    args=(key,),
+                    name=f"followup-stream-{conversation_id}",
+                    daemon=True,
+                )
+                self.threads[key] = thread
+                thread.start()
+
+        try:
+            while True:
+                try:
+                    yield subscriber.get(timeout=15)
+                except queue.Empty:
+                    yield {
+                        "event": "ping",
+                        "data": {"conversation_id": conversation_id},
+                    }
+        finally:
+            with self.lock:
+                subscribers = self.subscribers.get(key)
+                if subscribers is not None:
+                    subscribers.discard(subscriber)
+                    if not subscribers:
+                        self.subscribers.pop(key, None)
+
+    def _run_upstream(self, key: tuple[str, str, bool]) -> None:
+        service_url, conversation_id, tts_enabled = key
+        response: requests.Response | None = None
+        try:
+            response = requests.get(
+                urljoin(service_url, "/followups/stream"),
+                params={
+                    "conversation_id": conversation_id,
+                    "tts_enabled": str(tts_enabled).lower(),
+                },
+                stream=True,
+                timeout=(3, None),
+            )
+            for item in _iter_sse_events(response):
+                if self.on_upstream_event is not None:
+                    self.on_upstream_event(key, item)
+                self._publish(key, item)
+                with self.lock:
+                    if not self.subscribers.get(key):
+                        return
+        except Exception as exc:
+            self._publish(
+                key,
+                {
+                    "event": "followup_error",
+                    "data": {"message": str(exc) or exc.__class__.__name__},
+                },
+            )
+        finally:
+            if response is not None:
+                response.close()
+            with self.lock:
+                thread = self.threads.get(key)
+                if thread is threading.current_thread():
+                    self.threads.pop(key, None)
+
+    def _publish(self, key: tuple[str, str, bool], item: dict) -> None:
+        with self.lock:
+            subscribers = list(self.subscribers.get(key) or [])
+        for subscriber in subscribers:
+            subscriber.put(item)
 
 
 @dataclass
@@ -902,6 +1160,7 @@ class ReachyDialogueApp(ReachyMiniApp):
             ),
         }
         jobs: queue.Queue[RobotJob] = queue.Queue()
+        playback_scheduler = RobotAudioPlaybackScheduler(jobs)
         recorder = RobotMicRecorder(reachy_mini)
         playback_tester = RobotMicPlaybackTester(reachy_mini)
         behavior_config = _load_behavior_config()
@@ -996,13 +1255,12 @@ class ReachyDialogueApp(ReachyMiniApp):
                     if emoji_result is not None:
                         data["emoji_trigger"] = _emoji_result_payload(emoji_result)
                 action_signal = _first_ok_module_key(behavior_results, "action")
-                jobs.put(
-                    RobotJob(
-                        audio_base64=data.get("audio_base64"),
-                        audio_sample_rate=int(current["tts_sample_rate"]),
-                        action_signal=action_signal,
-                        action_config=_module_config(behavior_config, "action"),
-                    )
+                playback_scheduler.submit_complete(
+                    audio_base64=data.get("audio_base64"),
+                    audio_sample_rate=int(current["tts_sample_rate"]),
+                    action_signal=action_signal,
+                    action_config=_module_config(behavior_config, "action"),
+                    key=_playback_key_from_payload(data),
                 )
             return data
 
@@ -1011,12 +1269,14 @@ class ReachyDialogueApp(ReachyMiniApp):
             settings,
             settings_lock,
             behavior_config=behavior_config,
-            jobs=jobs,
+            playback_scheduler=playback_scheduler,
         )
         _register_followup_routes(
             self.settings_app,
             settings,
             settings_lock,
+            playback_scheduler=playback_scheduler,
+            behavior_config=behavior_config,
         )
 
         @self.settings_app.get("/api/audio-volume")
@@ -1084,11 +1344,10 @@ class ReachyDialogueApp(ReachyMiniApp):
             transcript = recorder.get_transcript()
             final_response = recorder.final_response or {}
             if final_response:
-                jobs.put(
-                    RobotJob(
-                        audio_base64=final_response.get("audio_base64"),
-                        audio_sample_rate=int(current["tts_sample_rate"]),
-                    )
+                playback_scheduler.submit_complete(
+                    audio_base64=final_response.get("audio_base64"),
+                    audio_sample_rate=int(current["tts_sample_rate"]),
+                    key=_playback_key_from_payload(final_response),
                 )
             return {
                 "audio_base64": recording.audio_base64,
@@ -1124,6 +1383,9 @@ class ReachyDialogueApp(ReachyMiniApp):
 
             def event_stream():
                 audio_sample_rate = int(current["tts_sample_rate"])
+                fallback_playback_key = _new_playback_key("robot-mic")
+                playback_key: str | None = None
+                playback_completed = False
                 try:
                     yield _sse_frame(
                         "recording",
@@ -1152,13 +1414,26 @@ class ReachyDialogueApp(ReachyMiniApp):
                                 or audio_sample_rate
                             )
                             if isinstance(audio_base64, str) and audio_base64:
-                                jobs.put(
-                                    RobotJob(
-                                        audio_base64=audio_base64,
-                                        audio_sample_rate=audio_sample_rate,
-                                    )
+                                playback_key = playback_scheduler.enqueue_audio(
+                                    playback_key
+                                    or _playback_key_from_payload(
+                                        data,
+                                        fallback_playback_key,
+                                    ),
+                                    audio_base64=audio_base64,
+                                    sample_rate=audio_sample_rate,
+                                    chunk_index=_optional_int(
+                                        data.get("chunk_index")
+                                    ),
+                                    segment_index=_optional_int(
+                                        data.get("segment_index")
+                                    ),
                                 )
                         if event == "done":
+                            playback_key = playback_key or _playback_key_from_payload(
+                                data,
+                                fallback_playback_key,
+                            )
                             recorder.final_response = dict(data)
                             recorder.live_transcript = LiveTranscript(
                                 text=str(data.get("transcript") or ""),
@@ -1180,38 +1455,45 @@ class ReachyDialogueApp(ReachyMiniApp):
                             )
                             audio_base64 = data.get("audio_base64")
                             if isinstance(audio_base64, str) and audio_base64:
-                                jobs.put(
-                                    RobotJob(
-                                        audio_base64=audio_base64,
-                                        audio_sample_rate=int(
-                                            data.get("sample_rate")
-                                            or data.get("audio_sample_rate")
-                                            or audio_sample_rate
-                                        ),
-                                    )
+                                playback_scheduler.enqueue_audio(
+                                    playback_key,
+                                    audio_base64=audio_base64,
+                                    sample_rate=int(
+                                        data.get("sample_rate")
+                                        or data.get("audio_sample_rate")
+                                        or audio_sample_rate
+                                    ),
+                                    chunk_index=_optional_int(data.get("chunk_index")),
+                                    segment_index=_optional_int(
+                                        data.get("segment_index")
+                                    ),
                                 )
                             playback_done = threading.Event()
-                            jobs.put(
-                                RobotJob(
-                                    action_signal=action_signal,
-                                    action_config=_module_config(
-                                        behavior_config,
-                                        "action",
-                                    ),
-                                    done_event=playback_done,
-                                )
+                            playback_scheduler.complete(
+                                playback_key,
+                                action_signal=action_signal,
+                                action_config=_module_config(
+                                    behavior_config,
+                                    "action",
+                                ),
+                                done_event=playback_done,
                             )
+                            playback_completed = True
                             yield _sse_frame(event, data)
                             playback_done.wait(timeout=120)
                             yield _sse_frame("playback_done", {"ok": True})
                             continue
                         yield _sse_frame(event, data)
                 except Exception as exc:
+                    if not playback_completed:
+                        playback_scheduler.abort(playback_key or fallback_playback_key)
                     yield _sse_frame(
                         "error",
                         {"message": str(exc) or exc.__class__.__name__},
                     )
                 finally:
+                    if not playback_completed:
+                        playback_scheduler.abort(playback_key or fallback_playback_key)
                     recorder.finish_reply_processing(session)
 
             return StreamingResponse(
@@ -1272,12 +1554,10 @@ class ReachyDialogueApp(ReachyMiniApp):
             except Exception as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
             playback_done = threading.Event()
-            jobs.put(
-                RobotJob(
-                    audio_base64=recording.audio_base64,
-                    audio_sample_rate=recording.sample_rate,
-                    done_event=playback_done,
-                )
+            playback_scheduler.submit_complete(
+                audio_base64=recording.audio_base64,
+                audio_sample_rate=recording.sample_rate,
+                done_event=playback_done,
             )
             playback_timeout = min(120.0, max(5.0, recording.duration_seconds + 5.0))
             playback_finished = playback_done.wait(timeout=playback_timeout)
@@ -1323,6 +1603,55 @@ def _snapshot(
         current = dict(settings)
     current["service_url"] = _normalize_service_url(current["service_url"])
     return current
+
+
+def _new_playback_key(prefix: str) -> str:
+    return f"{prefix}:{uuid.uuid4().hex}"
+
+
+def _playback_key_from_payload(
+    payload: dict[str, Any],
+    fallback: str | None = None,
+) -> str:
+    return _payload_playback_key(payload) or fallback or _new_playback_key(
+        "robot-audio"
+    )
+
+
+def _payload_playback_key(payload: dict[str, Any]) -> str | None:
+    request_id = _payload_string(payload, "request_id") or _payload_string(
+        payload, "parent_request_id"
+    )
+    turn_id = (
+        _payload_string(payload, "followup_turn_id")
+        or _payload_string(payload, "assistant_turn_id")
+        or _payload_string(payload, "reply_turn_id")
+        or _payload_string(payload, "turn_id")
+    )
+    if request_id and turn_id:
+        return f"request:{request_id}:turn:{turn_id}"
+    if request_id:
+        return f"request:{request_id}"
+    conversation_id = _payload_string(payload, "conversation_id")
+    if conversation_id and turn_id:
+        return f"conversation:{conversation_id}:turn:{turn_id}"
+    return None
+
+
+def _payload_string(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _default_settings() -> dict[str, Any]:
@@ -1385,7 +1714,7 @@ def _register_text_chat_routes(
     settings_lock: threading.Lock,
     *,
     behavior_config: dict[str, Any],
-    jobs: queue.Queue[RobotJob] | None = None,
+    playback_scheduler: RobotAudioPlaybackScheduler | None = None,
 ) -> None:
     @app.post("/api/text-chat-stream")
     def text_chat_stream(payload: TextChatPayload) -> StreamingResponse:
@@ -1401,8 +1730,16 @@ def _register_text_chat_routes(
 
         def event_stream():
             upstream: requests.Response | None = None
+            fallback_playback_key = _new_playback_key("text-chat")
+            playback_key: str | None = None
+            playback_completed = False
 
-            def finish_events(done_payload: dict[str, Any], reply: str):
+            def finish_events(
+                done_payload: dict[str, Any],
+                reply: str,
+                current_playback_key: str | None,
+            ):
+                nonlocal playback_completed
                 behavior_results = _trigger_behaviors_from_text(
                     reply,
                     behavior_config,
@@ -1415,11 +1752,15 @@ def _register_text_chat_routes(
                 done_payload.setdefault("conversation_id", conversation_id)
                 done_payload.setdefault("transcript", text)
                 done_payload.setdefault("reply", reply)
-                if jobs is None:
+                if playback_scheduler is None:
                     yield _sse_frame("done", done_payload)
                     yield _sse_frame("playback_done", {"ok": True, "skipped": True})
                     return
 
+                resolved_playback_key = current_playback_key or _playback_key_from_payload(
+                    done_payload,
+                    fallback_playback_key,
+                )
                 action_signal = _first_ok_module_key(
                     behavior_results,
                     "action",
@@ -1435,15 +1776,21 @@ def _register_text_chat_routes(
                     or current["tts_sample_rate"]
                 )
                 playback_done = threading.Event()
-                jobs.put(
-                    RobotJob(
+                if isinstance(audio_base64, str) and audio_base64:
+                    playback_scheduler.enqueue_audio(
+                        resolved_playback_key,
                         audio_base64=audio_base64,
-                        audio_sample_rate=audio_sample_rate,
-                        action_signal=action_signal,
-                        action_config=_module_config(behavior_config, "action"),
-                        done_event=playback_done,
+                        sample_rate=audio_sample_rate,
+                        chunk_index=_optional_int(done_payload.get("chunk_index")),
+                        segment_index=_optional_int(done_payload.get("segment_index")),
                     )
+                playback_scheduler.complete(
+                    resolved_playback_key,
+                    action_signal=action_signal,
+                    action_config=_module_config(behavior_config, "action"),
+                    done_event=playback_done,
                 )
+                playback_completed = True
                 yield _sse_frame("done", done_payload)
                 playback_done.wait(timeout=120)
                 yield _sse_frame("playback_done", {"ok": True})
@@ -1478,13 +1825,35 @@ def _register_text_chat_routes(
                     reply = _reply_text_from_payload(data)
                     if reply:
                         yield _sse_frame("delta", {"delta": reply})
-                    yield from finish_events(dict(data), reply)
+                    yield from finish_events(dict(data), reply, playback_key)
                     return
 
                 reply_parts: list[str] = []
                 for item in _iter_sse_events(upstream):
                     event = str(item.get("event") or "message")
                     data = item.get("data") or {}
+                    if event == "audio" and playback_scheduler is not None:
+                        audio_base64 = data.get("audio_base64")
+                        if isinstance(audio_base64, str) and audio_base64:
+                            playback_key = playback_scheduler.enqueue_audio(
+                                playback_key
+                                or _playback_key_from_payload(
+                                    data,
+                                    fallback_playback_key,
+                                ),
+                                audio_base64=audio_base64,
+                                sample_rate=int(
+                                    data.get("sample_rate")
+                                    or data.get("audio_sample_rate")
+                                    or current["tts_sample_rate"]
+                                ),
+                                chunk_index=_optional_int(data.get("chunk_index")),
+                                segment_index=_optional_int(
+                                    data.get("segment_index")
+                                ),
+                            )
+                        yield _sse_frame(event, data)
+                        continue
                     if event == "delta":
                         delta = str(data.get("delta") or "")
                         if delta:
@@ -1493,10 +1862,14 @@ def _register_text_chat_routes(
                         continue
                     if event == "done":
                         reply = _reply_text_from_payload(data) or "".join(reply_parts)
-                        yield from finish_events(dict(data), reply)
+                        yield from finish_events(dict(data), reply, playback_key)
                         return
                     yield _sse_frame(event, data)
                     if event == "error":
+                        if not playback_completed and playback_scheduler is not None:
+                            playback_scheduler.abort(
+                                playback_key or fallback_playback_key
+                            )
                         return
 
                 reply = "".join(reply_parts)
@@ -1508,15 +1881,20 @@ def _register_text_chat_routes(
                             "reply": reply,
                         },
                         reply,
+                        playback_key,
                     )
             except HTTPException as exc:
                 yield _sse_frame("error", {"message": str(exc.detail)})
             except Exception as exc:
+                if not playback_completed and playback_scheduler is not None:
+                    playback_scheduler.abort(playback_key or fallback_playback_key)
                 yield _sse_frame(
                     "error",
                     {"message": str(exc) or exc.__class__.__name__},
                 )
             finally:
+                if not playback_completed and playback_scheduler is not None:
+                    playback_scheduler.abort(playback_key or fallback_playback_key)
                 if upstream is not None:
                     upstream.close()
 
@@ -1534,38 +1912,92 @@ def _register_followup_routes(
     app: FastAPI,
     settings: dict[str, Any],
     settings_lock: threading.Lock,
+    *,
+    playback_scheduler: RobotAudioPlaybackScheduler | None = None,
+    behavior_config: dict[str, Any] | None = None,
 ) -> None:
+    playback_states: dict[tuple[str, str, bool], dict[str, Any]] = {}
+
+    def on_upstream_event(key: tuple[str, str, bool], item: dict) -> None:
+        if playback_scheduler is None:
+            return
+        state = playback_states.setdefault(
+            key,
+            {
+                "playback_key": None,
+                "fallback_playback_key": _new_playback_key("followup"),
+                "completed": False,
+            },
+        )
+        event = str(item.get("event") or "message")
+        data = item.get("data") or {}
+        if event == "audio":
+            audio_base64 = data.get("audio_base64")
+            if isinstance(audio_base64, str) and audio_base64:
+                state["playback_key"] = playback_scheduler.enqueue_audio(
+                    state["playback_key"]
+                    or _playback_key_from_payload(
+                        data,
+                        state["fallback_playback_key"],
+                    ),
+                    audio_base64=audio_base64,
+                    sample_rate=int(
+                        data.get("sample_rate")
+                        or data.get("audio_sample_rate")
+                        or _snapshot(settings, settings_lock)["tts_sample_rate"]
+                    ),
+                    chunk_index=_optional_int(data.get("chunk_index")),
+                    segment_index=_optional_int(data.get("segment_index")),
+                )
+        elif event == "followup_done":
+            state["playback_key"] = state["playback_key"] or _playback_key_from_payload(
+                data,
+                state["fallback_playback_key"],
+            )
+            playback_scheduler.complete(state["playback_key"])
+            state["completed"] = True
+            playback_states.pop(key, None)
+        elif event == "followup":
+            state["playback_key"] = state["playback_key"] or _playback_key_from_payload(
+                data,
+                state["fallback_playback_key"],
+            )
+        elif event in {"followup_error", "error"}:
+            playback_scheduler.abort(
+                state.get("playback_key") or state.get("fallback_playback_key")
+            )
+            playback_states.pop(key, None)
+
+    followup_hub = FollowupStreamHub(on_upstream_event=on_upstream_event)
+
     @app.get("/api/followups/stream")
-    def followups_stream(conversation_id: str | None = None) -> StreamingResponse:
+    def followups_stream(
+        conversation_id: str | None = None,
+        tts_enabled: bool = True,
+    ) -> StreamingResponse:
         current = _snapshot(settings, settings_lock)
         selected_conversation_id = (
             conversation_id or current["conversation_id"] or DEFAULT_CONVERSATION_ID
         ).strip()
 
         def event_stream():
-            upstream: requests.Response | None = None
-            try:
-                upstream = requests.get(
-                    urljoin(current["service_url"], "/followups/stream"),
-                    params={"conversation_id": selected_conversation_id},
-                    stream=True,
-                    timeout=(3, None),
-                )
-                for item in _iter_sse_events(upstream):
-                    yield _sse_frame(
-                        str(item.get("event") or "message"),
-                        item.get("data") or {},
-                    )
-            except HTTPException as exc:
-                yield _sse_frame("followup_error", {"message": str(exc.detail)})
-            except Exception as exc:
-                yield _sse_frame(
-                    "followup_error",
-                    {"message": str(exc) or exc.__class__.__name__},
-                )
-            finally:
-                if upstream is not None:
-                    upstream.close()
+            for item in followup_hub.subscribe(
+                service_url=current["service_url"],
+                conversation_id=selected_conversation_id,
+                tts_enabled=tts_enabled,
+            ):
+                event = str(item.get("event") or "message")
+                data = item.get("data") or {}
+                if event == "followup" and behavior_config is not None:
+                    for result in _trigger_behaviors_from_text(
+                        str(data.get("reply") or ""),
+                        behavior_config,
+                    ):
+                        yield _sse_frame(
+                            "behavior",
+                            _behavior_result_payload(result),
+                        )
+                yield _sse_frame(event, data)
 
         return StreamingResponse(
             event_stream(),
@@ -1789,7 +2221,12 @@ def _build_web_only_app() -> FastAPI:
         settings_lock,
         behavior_config=behavior_config,
     )
-    _register_followup_routes(app, settings, settings_lock)
+    _register_followup_routes(
+        app,
+        settings,
+        settings_lock,
+        behavior_config=behavior_config,
+    )
     _register_local_mic_routes(
         app,
         settings,
@@ -2389,7 +2826,7 @@ def _iter_sse_events(response: requests.Response):
 
     event = "message"
     data_lines: list[str] = []
-    for raw_line in response.iter_lines(decode_unicode=True):
+    for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
         if raw_line is None:
             continue
         line = raw_line.rstrip("\r")
@@ -2436,8 +2873,10 @@ def _handle_robot_job(reachy_mini: ReachyMini, job: RobotJob) -> None:
     wav_path = None
     playback_seconds = 0.0
     try:
-        if job.audio_base64:
+        audio_bytes = job.audio_bytes
+        if audio_bytes is None and job.audio_base64:
             audio_bytes = base64.b64decode(job.audio_base64)
+        if audio_bytes:
             playback_seconds = len(audio_bytes) / (2.0 * job.audio_sample_rate)
             wav_path = _write_pcm_wav(audio_bytes, job.audio_sample_rate)
         started_at = time.monotonic()

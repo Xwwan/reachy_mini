@@ -28,6 +28,121 @@ let localPlaybackNextTime = 0;
 
 const LOCAL_TARGET_SAMPLE_RATE = 16000;
 const LOCAL_CHUNK_BYTES = 5120;
+const LOCAL_PLAYBACK_START_BUFFER_SECONDS = 0.08;
+
+class AudioPlaybackScheduler {
+    constructor({ ensureReady, playBytes, onStatus }) {
+        this.ensureReady = ensureReady;
+        this.playBytes = playBytes;
+        this.onStatus = onStatus || (() => {});
+        this.groups = new Map();
+        this.queue = [];
+        this.arrivalIndex = 0;
+        this.isPlaying = false;
+    }
+
+    enqueueAudio(data, { fallbackKey = null } = {}) {
+        const key = this.resolveKey(data, fallbackKey);
+        const group = this.ensureGroup(key);
+        group.chunks.push({
+            bytes: base64ToBytes(data.audio_base64 || ""),
+            sampleRate: Number(data.sample_rate || data.audio_sample_rate || 24000),
+            chunkIndex: optionalNumber(data.chunk_index),
+            segmentIndex: optionalNumber(data.segment_index),
+            arrivalIndex: ++this.arrivalIndex,
+        });
+        this.drain().catch((error) => {
+            this.onStatus(error.message || String(error));
+        });
+        return key;
+    }
+
+    complete(data, { fallbackKey = null } = {}) {
+        const key = this.resolveKey(data, fallbackKey);
+        const group = this.ensureGroup(key);
+        group.completed = true;
+        this.drain().catch((error) => {
+            this.onStatus(error.message || String(error));
+        });
+        return key;
+    }
+
+    abort(key) {
+        if (!key) {
+            return;
+        }
+        this.groups.delete(key);
+        this.queue = this.queue.filter((queuedKey) => queuedKey !== key);
+    }
+
+    resolveKey(data, fallbackKey) {
+        if (fallbackKey && this.groups.has(fallbackKey)) {
+            return fallbackKey;
+        }
+        return playbackKeyFromPayload(data) || fallbackKey || makeId("audio");
+    }
+
+    ensureGroup(key) {
+        if (!this.groups.has(key)) {
+            this.groups.set(key, {
+                key,
+                chunks: [],
+                completed: false,
+                emittedCount: 0,
+            });
+            this.queue.push(key);
+        }
+        return this.groups.get(key);
+    }
+
+    async drain() {
+        if (this.isPlaying) {
+            return;
+        }
+        this.isPlaying = true;
+        try {
+            while (this.queue.length > 0) {
+                const key = this.queue[0];
+                const group = this.groups.get(key);
+                if (!group) {
+                    this.queue.shift();
+                    continue;
+                }
+
+                if (group.emittedCount === 0 && group.chunks.length > 1) {
+                    group.chunks.sort((a, b) => (
+                        (a.segmentIndex ?? 0) - (b.segmentIndex ?? 0)
+                        || (a.chunkIndex ?? a.arrivalIndex) - (b.chunkIndex ?? b.arrivalIndex)
+                        || a.arrivalIndex - b.arrivalIndex
+                    ));
+                }
+                while (group.emittedCount < group.chunks.length) {
+                    const chunk = group.chunks[group.emittedCount];
+                    group.emittedCount += 1;
+                    if (chunk.bytes.length > 0) {
+                        await this.ensureReady();
+                        this.onStatus("正在播放语音回复");
+                        this.playBytes(chunk.bytes, chunk.sampleRate || 24000);
+                    }
+                }
+
+                if (!group.completed) {
+                    return;
+                }
+                this.queue.shift();
+                this.groups.delete(key);
+            }
+        } finally {
+            this.isPlaying = false;
+        }
+    }
+}
+
+const localAudioPlaybackScheduler = new AudioPlaybackScheduler({
+    ensureReady: ensureLocalPlaybackContext,
+    playBytes: playLocalPcmBytes,
+    onStatus: setStatus,
+});
 
 const chatState = {
     messages: [],
@@ -36,6 +151,8 @@ const chatState = {
     followupConnected: false,
     eventLog: [],
     seenFollowups: new Set(),
+    followupPlaybackKey: null,
+    followupPlaybackFallbackKey: null,
 };
 
 const els = {
@@ -163,7 +280,11 @@ function connectFollowups() {
         setFollowupState(false, "缺少 conversation_id");
         return;
     }
-    const url = `/api/followups/stream?conversation_id=${encodeURIComponent(conversationId)}`;
+    const params = new URLSearchParams({
+        conversation_id: conversationId,
+        tts_enabled: "true",
+    });
+    const url = `/api/followups/stream?${params.toString()}`;
     const source = new EventSource(url);
     chatState.followupSource = source;
     setFollowupState(false, "记忆通道连接中");
@@ -177,7 +298,17 @@ function connectFollowups() {
         appendEventLog("followup:error", { conversation_id: conversationId });
     };
 
-    for (const eventName of ["message", "followup", "supplement", "correction", "done", "followup_error"]) {
+    for (const eventName of [
+        "message",
+        "followup",
+        "supplement",
+        "correction",
+        "audio",
+        "followup_done",
+        "behavior",
+        "done",
+        "followup_error",
+    ]) {
         source.addEventListener(eventName, (event) => {
             const payload = parseEventSourcePayload(event.data);
             handleFollowupPayload(payload, eventName);
@@ -212,11 +343,53 @@ function parseEventSourcePayload(raw) {
 
 function handleFollowupPayload(payload, eventName) {
     appendEventLog(`followup:${eventName}`, payload);
+    if (eventName === "audio") {
+        if (appMode.web_only || currentVoiceMode() === "local") {
+            chatState.followupPlaybackFallbackKey =
+                chatState.followupPlaybackFallbackKey || makeId("followup-audio");
+            chatState.followupPlaybackKey = localAudioPlaybackScheduler.enqueueAudio(
+                payload,
+                {
+                    fallbackKey:
+                        chatState.followupPlaybackKey
+                        || chatState.followupPlaybackFallbackKey,
+                },
+            );
+        }
+        setStatus("正在接收记忆补充语音");
+        return;
+    }
+    if (eventName === "followup_done") {
+        if (appMode.web_only || currentVoiceMode() === "local") {
+            chatState.followupPlaybackKey = localAudioPlaybackScheduler.complete(
+                payload,
+                {
+                    fallbackKey:
+                        chatState.followupPlaybackKey
+                        || chatState.followupPlaybackFallbackKey
+                        || makeId("followup-audio"),
+                },
+            );
+        }
+        chatState.followupPlaybackKey = null;
+        chatState.followupPlaybackFallbackKey = null;
+        setStatus("记忆补充语音完成");
+        return;
+    }
+    if (eventName === "behavior") {
+        setStatus(formatBehaviorStatus(payload));
+        return;
+    }
     if (payload.message && !payload.request_id && !payload.reply) {
         setStatus(payload.message);
         return;
     }
     if (eventName === "followup_error" || payload.error || payload.message === "error") {
+        localAudioPlaybackScheduler.abort(
+            chatState.followupPlaybackKey || chatState.followupPlaybackFallbackKey,
+        );
+        chatState.followupPlaybackKey = null;
+        chatState.followupPlaybackFallbackKey = null;
         setStatus(payload.error || payload.message || "follow-up 通道错误");
         return;
     }
@@ -333,6 +506,7 @@ async function startRecording() {
         throw new Error("请等当前文本回复结束后再录音。");
     }
     await saveSettings();
+    connectFollowups();
     lastRecordingStats = null;
     const response = await fetch("/api/robot-mic/start", { method: "POST" });
     const result = await response.json();
@@ -664,6 +838,8 @@ async function stopLocalRecordingAndReply() {
         userMessageId: null,
         assistantMessageId: null,
     };
+    const playbackFallbackKey = makeId(`local-audio-${localSessionId || "session"}`);
+    let playbackKey = null;
     try {
         const finishResponse = await fetch("/api/local-mic/finish-stream", {
             method: "POST",
@@ -689,16 +865,26 @@ async function stopLocalRecordingAndReply() {
                 context.assistantMessageId = exchange.assistantMessage.id;
             },
             onAudio: (data) => {
-                playLocalPcmChunk(
-                    base64ToBytes(data.audio_base64 || ""),
-                    data.sample_rate || data.audio_sample_rate || 24000,
+                playbackKey = localAudioPlaybackScheduler.enqueueAudio(
+                    data,
+                    { fallbackKey: playbackKey || playbackFallbackKey },
                 );
+            },
+            onDone: (data) => {
+                playbackKey = localAudioPlaybackScheduler.complete(
+                    data,
+                    { fallbackKey: playbackKey || playbackFallbackKey },
+                );
+            },
+            onError: () => {
+                localAudioPlaybackScheduler.abort(playbackKey || playbackFallbackKey);
             },
             onTranscript: () => {
                 setStatus("已识别本机语音，正在流式生成回复...");
             },
         });
     } catch (error) {
+        localAudioPlaybackScheduler.abort(playbackKey || playbackFallbackKey);
         if (context.assistantMessageId) {
             markMessageError(context.assistantMessageId, describeError(error));
         }
@@ -736,6 +922,7 @@ async function renderDialogueStream(response, options = {}) {
     let userMessageId = options.userMessageId || null;
     let assistantMessageId = options.assistantMessageId || null;
     let requestId = null;
+    let textStreamKey = null;
 
     setStatus(options.waitingStatus || "正在生成回复...");
 
@@ -780,6 +967,7 @@ async function renderDialogueStream(response, options = {}) {
         }
         if (event === "meta") {
             ensureExchange(transcript);
+            textStreamKey = textStreamKey || playbackKeyFromPayload(data);
             requestId = bindRequestToExchange(data, {
                 userMessageId,
                 assistantMessageId,
@@ -789,6 +977,12 @@ async function renderDialogueStream(response, options = {}) {
             return;
         }
         if (event === "delta") {
+            const deltaKey = playbackKeyFromPayload(data);
+            if (deltaKey && textStreamKey && deltaKey !== textStreamKey) {
+                appendEventLog("delta:buffered_other_stream", data);
+                return;
+            }
+            textStreamKey = textStreamKey || deltaKey;
             ensureExchange(transcript || options.transcriptFallback);
             const assistant = getMessage(assistantMessageId);
             const delta = data.delta || "";
@@ -803,6 +997,7 @@ async function renderDialogueStream(response, options = {}) {
         }
         if (event === "audio") {
             audioChunkCount += 1;
+            textStreamKey = textStreamKey || playbackKeyFromPayload(data);
             options.onAudio?.(data);
             setStatus(`正在接收 TTS 音频 ${audioChunkCount}`);
             return;
@@ -821,6 +1016,8 @@ async function renderDialogueStream(response, options = {}) {
         }
         if (event === "done") {
             ensureExchange(transcript || data.transcript || options.transcriptFallback);
+            textStreamKey = textStreamKey || playbackKeyFromPayload(data);
+            options.onDone?.(data);
             finalPayload = data;
             transcript = data.transcript || transcript || options.transcriptFallback || "";
             reply = data.reply || reply;
@@ -868,6 +1065,7 @@ async function renderDialogueStream(response, options = {}) {
         if (event === "error") {
             ensureExchange(transcript || options.transcriptFallback);
             markMessageError(assistantMessageId, data.message || "流式回复失败");
+            options.onError?.(data);
             throw new Error(data.message || "流式回复失败");
         }
     });
@@ -1445,9 +1643,9 @@ async function ensureLocalPlaybackContext() {
     }
 }
 
-function playLocalPcmChunk(bytes, sampleRate) {
+function playLocalPcmBytes(bytes, sampleRate) {
     if (!bytes.length || !localPlaybackContext) {
-        return;
+        return 0;
     }
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const sampleCount = Math.floor(bytes.length / 2);
@@ -1459,9 +1657,14 @@ function playLocalPcmChunk(bytes, sampleRate) {
     const source = localPlaybackContext.createBufferSource();
     source.buffer = buffer;
     source.connect(localPlaybackContext.destination);
-    const startAt = Math.max(localPlaybackContext.currentTime + 0.02, localPlaybackNextTime);
-    source.start(startAt);
+    const currentTime = localPlaybackContext.currentTime;
+    const startAt = localPlaybackNextTime > currentTime
+        ? localPlaybackNextTime
+        : currentTime + LOCAL_PLAYBACK_START_BUFFER_SECONDS;
     localPlaybackNextTime = startAt + buffer.duration;
+    source.onended = () => source.disconnect();
+    source.start(startAt);
+    return localPlaybackNextTime;
 }
 
 async function readSseStream(response, onEvent) {
@@ -1549,6 +1752,39 @@ function base64ToBytes(value) {
         bytes[i] = binary.charCodeAt(i);
     }
     return bytes;
+}
+
+function playbackKeyFromPayload(payload) {
+    const requestId = payloadString(payload, "request_id")
+        || payloadString(payload, "parent_request_id");
+    const turnId = payloadString(payload, "followup_turn_id")
+        || payloadString(payload, "assistant_turn_id")
+        || payloadString(payload, "reply_turn_id")
+        || payloadString(payload, "turn_id");
+    if (requestId && turnId) {
+        return `request:${requestId}:turn:${turnId}`;
+    }
+    if (requestId) {
+        return `request:${requestId}`;
+    }
+    const conversationId = payloadString(payload, "conversation_id");
+    if (conversationId && turnId) {
+        return `conversation:${conversationId}:turn:${turnId}`;
+    }
+    return null;
+}
+
+function payloadString(payload, key) {
+    const value = payload?.[key];
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function optionalNumber(value) {
+    if (value === null || value === undefined || value === "") {
+        return null;
+    }
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
 }
 
 function concatBytes(a, b) {
