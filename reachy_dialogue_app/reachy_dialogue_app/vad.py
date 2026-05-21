@@ -16,6 +16,7 @@ SILERO_CHUNK_SIZE = 512
 class VadConfig:
     sample_rate: int = SILERO_SAMPLE_RATE
     speech_threshold: float = 0.5
+    rms_speech_threshold: float = 0.01
     min_speech_ms: int = 250
     min_silence_ms: int = 900
     pre_roll_ms: int = 300
@@ -140,7 +141,13 @@ class UtteranceSegmenter:
 
     def _feed_chunk(self, chunk: np.ndarray) -> VadEvent | None:
         frame = self.vad.predict_chunk(chunk)
-        is_speech = frame.speech_probability >= self.config.speech_threshold
+        is_speech = (
+            frame.speech_probability >= self.config.speech_threshold
+            or (
+                self.config.rms_speech_threshold > 0
+                and frame.rms >= self.config.rms_speech_threshold
+            )
+        )
         self.last_probability = frame.speech_probability
         self.last_rms = frame.rms
         self.last_peak = frame.peak
@@ -157,6 +164,7 @@ class UtteranceSegmenter:
                     speech_probability=frame.speech_probability,
                     rms=frame.rms,
                     peak=frame.peak,
+                    audio=np.concatenate(self.current),
                 )
             self.current.append(chunk.copy())
             self.speech_samples += chunk.shape[0]

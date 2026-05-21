@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Auto Voice VAD Test</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .test-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr);
+            gap: 1rem;
+        }
+
+        .test-controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.8rem;
+        }
+
+        .test-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            align-items: center;
+        }
+
+        .state-strip {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.6rem;
+        }
+
+        .state-tile {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 0.75rem;
+            background: var(--panel);
+        }
+
+        .state-tile span {
+            display: block;
+            color: var(--muted);
+            font-size: 0.78rem;
+            margin-bottom: 0.35rem;
+        }
+
+        .state-tile strong {
+            font-size: 1rem;
+        }
+
+        .log-toolbar {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.8rem;
+            align-items: center;
+        }
+
+        .event-log {
+            min-height: 18rem;
+            max-height: 34rem;
+            overflow: auto;
+            white-space: pre-wrap;
+        }
+
+        .inline-check {
+            display: flex;
+            gap: 0.45rem;
+            align-items: center;
+            min-height: 44px;
+        }
+
+        .inline-check input {
+            width: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <main class="app-shell">
+        <header class="topbar">
+            <div>
+                <h1>Auto Voice VAD Test</h1>
+                <p id="connection-status">未检查服务</p>
+            </div>
+            <div class="topbar-actions">
+                <a class="secondary-link" href="/">主页面</a>
+                <a class="secondary-link" href="/static/local-mic-test.html">手动语音测试</a>
+                <button id="health-btn" type="button">检查</button>
+            </div>
+        </header>
+
+        <section class="settings-panel" aria-label="设置">
+            <div class="test-controls">
+                <label>
+                    <span>对话服务地址</span>
+                    <input id="service-url" type="url" inputmode="url" autocomplete="off">
+                </label>
+                <label>
+                    <span>会话 ID</span>
+                    <input id="conversation-id" type="text" autocomplete="off">
+                </label>
+                <label>
+                    <span>输入</span>
+                    <select id="input-mode">
+                        <option value="local">电脑麦克风</option>
+                        <option value="robot">机器人麦克风</option>
+                    </select>
+                </label>
+                <label>
+                    <span>TTS</span>
+                    <select id="tts-enabled">
+                        <option value="false">关闭</option>
+                        <option value="true">开启</option>
+                    </select>
+                </label>
+                <label class="inline-check">
+                    <input id="play-audio" type="checkbox">
+                    <span>播放返回音频</span>
+                </label>
+            </div>
+        </section>
+
+        <section class="voice-panel" aria-label="自动语音">
+            <div class="test-actions">
+                <button id="start-btn" class="record-button" type="button">开始测试</button>
+                <button id="stop-btn" class="record-button secondary" type="button" disabled>停止</button>
+                <button id="clear-log-btn" type="button">清空日志</button>
+            </div>
+            <div id="recording-time">00:00</div>
+            <div class="meter" aria-label="VAD 概率">
+                <div class="meter-header">
+                    <span>本地麦克风 / 后端 VAD</span>
+                    <strong id="vad-level-text">prob 0.000 rms 0.00000</strong>
+                </div>
+                <div class="meter-track">
+                    <div id="vad-level-fill" class="meter-fill"></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="state-strip" aria-label="状态">
+            <div class="state-tile">
+                <span>session</span>
+                <strong id="session-id">-</strong>
+            </div>
+            <div class="state-tile">
+                <span>state</span>
+                <strong id="state">stopped</strong>
+            </div>
+            <div class="state-tile">
+                <span>chunks</span>
+                <strong id="chunk-count">0</strong>
+            </div>
+            <div class="state-tile">
+                <span>local rms</span>
+                <strong id="local-rms">0.00000</strong>
+            </div>
+            <div class="state-tile">
+                <span>audio</span>
+                <strong id="audio-count">0</strong>
+            </div>
+        </section>
+
+        <section class="conversation" aria-label="识别结果">
+            <div class="message user">
+                <span>STT</span>
+                <p id="transcript">等待语音</p>
+            </div>
+            <div class="message robot">
+                <span>回复流</span>
+                <p id="reply">等待事件</p>
+            </div>
+        </section>
+
+        <section class="debug-panel" aria-label="配置">
+            <span>配置</span>
+            <pre id="config-info">等待加载</pre>
+        </section>
+
+        <section class="debug-panel" aria-label="日志">
+            <div class="log-toolbar">
+                <span>日志</span>
+                <strong id="log-count">0</strong>
+            </div>
+            <pre id="event-log" class="event-log">等待测试</pre>
+        </section>
+
+        <div id="status-line" role="status">准备就绪</div>
+    </main>
+
+    <script src="/static/auto-voice-test.js?v=20260521-local-mic-pipeline"></script>
+</body>
+
+</html>

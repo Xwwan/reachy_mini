@@ -1,5 +1,22 @@
 enabled: true
 
+auto_voice:
+  model_path: ../models/silero_vad.onnx
+  input_gain: 1.0
+  local_chunk_queue_size: 80
+  robot_poll_seconds: 0.01
+  transcript_poll_seconds: 0.3
+  service_timeout_seconds: 120
+  vad:
+    speech_threshold: 0.5
+    rms_speech_threshold: 0.01
+    min_speech_ms: 250
+    min_silence_ms: 900
+    pre_roll_ms: 300
+    post_roll_ms: 250
+    max_utterance_ms: 15000
+    cooldown_ms: 400
+
 modules:
   emoji:
     enabled: true

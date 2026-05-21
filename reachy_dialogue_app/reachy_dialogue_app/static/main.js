@@ -15,6 +15,7 @@ let isAutoVoiceActive = false;
 let autoVoiceSessionId = null;
 let autoVoiceSource = null;
 let autoVoiceExchange = null;
+let autoVoiceInputOpen = false;
 
 let localAudioContext = null;
 let localPlaybackContext = null;
@@ -951,6 +952,7 @@ async function startAutoVoice() {
 
     autoVoiceSessionId = payload.session_id;
     isAutoVoiceActive = true;
+    autoVoiceInputOpen = payload.state === "listening" || payload.state === "user_speaking";
     isRecording = true;
     activeVoiceMode = inputMode === "local" ? "auto-local" : "auto-robot";
     autoVoiceExchange = null;
@@ -976,6 +978,8 @@ async function startAutoVoice() {
         "speech_start",
         "speech_end",
         "speech_cancelled",
+        "input_dropped",
+        "input_drained",
         "utterance",
         "transcript",
         "meta",
@@ -1020,6 +1024,10 @@ async function startAutoLocalAudioCapture() {
         }
         const input = event.inputBuffer.getChannelData(0);
         updateLocalMicLevel(input);
+        if (!autoVoiceInputOpen) {
+            localPendingBytes = new Uint8Array(0);
+            return;
+        }
         enqueueLocalPcm(
             downsampleToPcm16(
                 input,
@@ -1060,7 +1068,9 @@ async function sendAutoLocalMicLoop() {
         }
         localSentChunks += 1;
         localSentBytes += chunk.length;
-        localAcceptedBytes += chunk.length;
+        if (payload.accepted !== false) {
+            localAcceptedBytes += chunk.length;
+        }
         renderDebugInfo(localMicDebug({ mode: "auto-local" }));
     }
 }
@@ -1095,6 +1105,7 @@ async function stopAutoVoice() {
     activeVoiceMode = null;
     autoVoiceSessionId = null;
     autoVoiceExchange = null;
+    autoVoiceInputOpen = false;
     els.autoVoiceBtn.textContent = "进入对话模式";
     els.autoVoiceBtn.classList.remove("recording");
     els.autoVoiceStatus.textContent = "手动录音";
@@ -1110,6 +1121,11 @@ async function stopAutoVoice() {
 function handleAutoVoiceEvent(event, data) {
     appendEventLog(`auto:${event}`, data);
     if (event === "state") {
+        autoVoiceInputOpen = data.state === "listening" || data.state === "user_speaking";
+        if (!autoVoiceInputOpen) {
+            localSendQueue = [];
+            localPendingBytes = new Uint8Array(0);
+        }
         els.autoVoiceStatus.textContent = autoVoiceStateText(data.state);
         setStatus(`自动对话：${autoVoiceStateText(data.state)}`);
         return;
@@ -1123,13 +1139,26 @@ function handleAutoVoiceEvent(event, data) {
         return;
     }
     if (event === "speech_start") {
+        autoVoiceInputOpen = true;
         autoVoiceExchange = createAutoVoiceExchange("(正在说话...)");
         els.liveTranscript.textContent = "检测到语音，正在听...";
         return;
     }
+    if (event === "speech_end") {
+        autoVoiceInputOpen = false;
+        localSendQueue = [];
+        localPendingBytes = new Uint8Array(0);
+        els.liveTranscript.textContent = "语音结束，正在识别...";
+        return;
+    }
     if (event === "speech_cancelled") {
+        autoVoiceInputOpen = true;
         els.liveTranscript.textContent = "语音太短，继续听...";
         autoVoiceExchange = null;
+        return;
+    }
+    if (event === "input_dropped" || event === "input_drained") {
+        setStatus(data.reason ? `半双工丢弃输入：${data.reason}` : "半双工清空残留输入");
         return;
     }
     if (event === "utterance") {
@@ -1215,6 +1244,7 @@ function handleAutoVoiceEvent(event, data) {
     }
     if (event === "playback_done") {
         autoVoiceExchange = null;
+        autoVoiceInputOpen = false;
         els.autoVoiceStatus.textContent = "正在听";
         return;
     }

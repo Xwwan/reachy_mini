@@ -226,25 +226,119 @@ class RobotAudioPlaybackScheduler:
             self.groups.pop(key, None)
 
 
-def _auto_voice_model_path() -> Path:
+def _auto_voice_model_path(behavior_config: dict[str, Any] | None = None) -> Path:
+    auto_voice = _auto_voice_section(behavior_config)
+    configured = auto_voice.get("model_path")
     return Path(
-        os.environ.get("REACHY_DIALOGUE_VAD_MODEL") or DEFAULT_VAD_MODEL_FILE
+        os.environ.get("REACHY_DIALOGUE_VAD_MODEL")
+        or configured
+        or DEFAULT_VAD_MODEL_FILE
     ).expanduser()
 
 
-def _auto_voice_config() -> AutoVoiceConfig:
+def _auto_voice_config(behavior_config: dict[str, Any] | None = None) -> AutoVoiceConfig:
+    auto_voice = _auto_voice_section(behavior_config)
+    vad_config = auto_voice.get("vad")
+    if not isinstance(vad_config, dict):
+        vad_config = {}
     vad = VadConfig(
-        speech_threshold=float(os.environ.get("REACHY_DIALOGUE_VAD_THRESHOLD", "0.5")),
-        min_speech_ms=int(os.environ.get("REACHY_DIALOGUE_VAD_MIN_SPEECH_MS", "250")),
-        min_silence_ms=int(os.environ.get("REACHY_DIALOGUE_VAD_MIN_SILENCE_MS", "900")),
-        pre_roll_ms=int(os.environ.get("REACHY_DIALOGUE_VAD_PRE_ROLL_MS", "300")),
-        post_roll_ms=int(os.environ.get("REACHY_DIALOGUE_VAD_POST_ROLL_MS", "250")),
-        max_utterance_ms=int(
-            os.environ.get("REACHY_DIALOGUE_VAD_MAX_UTTERANCE_MS", "15000")
+        speech_threshold=_float_setting(
+            vad_config, "speech_threshold", "REACHY_DIALOGUE_VAD_THRESHOLD", 0.5
         ),
-        cooldown_ms=int(os.environ.get("REACHY_DIALOGUE_VAD_COOLDOWN_MS", "400")),
+        rms_speech_threshold=_float_setting(
+            vad_config,
+            "rms_speech_threshold",
+            "REACHY_DIALOGUE_VAD_RMS_SPEECH_THRESHOLD",
+            0.01,
+        ),
+        min_speech_ms=_int_setting(
+            vad_config, "min_speech_ms", "REACHY_DIALOGUE_VAD_MIN_SPEECH_MS", 250
+        ),
+        min_silence_ms=_int_setting(
+            vad_config, "min_silence_ms", "REACHY_DIALOGUE_VAD_MIN_SILENCE_MS", 900
+        ),
+        pre_roll_ms=_int_setting(
+            vad_config, "pre_roll_ms", "REACHY_DIALOGUE_VAD_PRE_ROLL_MS", 300
+        ),
+        post_roll_ms=_int_setting(
+            vad_config, "post_roll_ms", "REACHY_DIALOGUE_VAD_POST_ROLL_MS", 250
+        ),
+        max_utterance_ms=_int_setting(
+            vad_config,
+            "max_utterance_ms",
+            "REACHY_DIALOGUE_VAD_MAX_UTTERANCE_MS",
+            15000,
+        ),
+        cooldown_ms=_int_setting(
+            vad_config, "cooldown_ms", "REACHY_DIALOGUE_VAD_COOLDOWN_MS", 400
+        ),
     )
-    return AutoVoiceConfig(vad=vad)
+    return AutoVoiceConfig(
+        vad=vad,
+        input_gain=_float_setting(
+            auto_voice,
+            "input_gain",
+            "REACHY_DIALOGUE_AUTO_VOICE_INPUT_GAIN",
+            1.0,
+        ),
+        local_chunk_queue_size=_int_setting(
+            auto_voice,
+            "local_chunk_queue_size",
+            "REACHY_DIALOGUE_AUTO_VOICE_QUEUE_SIZE",
+            80,
+        ),
+        robot_poll_seconds=_float_setting(
+            auto_voice,
+            "robot_poll_seconds",
+            "REACHY_DIALOGUE_AUTO_VOICE_ROBOT_POLL_SECONDS",
+            0.01,
+        ),
+        transcript_poll_seconds=_float_setting(
+            auto_voice,
+            "transcript_poll_seconds",
+            "REACHY_DIALOGUE_AUTO_VOICE_TRANSCRIPT_POLL_SECONDS",
+            0.3,
+        ),
+        service_timeout_seconds=_int_setting(
+            auto_voice,
+            "service_timeout_seconds",
+            "REACHY_DIALOGUE_AUTO_VOICE_SERVICE_TIMEOUT_SECONDS",
+            120,
+        ),
+    )
+
+
+def _auto_voice_section(behavior_config: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(behavior_config, dict):
+        return {}
+    auto_voice = behavior_config.get("auto_voice")
+    return auto_voice if isinstance(auto_voice, dict) else {}
+
+
+def _int_setting(
+    config: dict[str, Any],
+    key: str,
+    env_key: str,
+    default: int,
+) -> int:
+    value = os.environ.get(env_key, config.get(key, default))
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_setting(
+    config: dict[str, Any],
+    key: str,
+    env_key: str,
+    default: float,
+) -> float:
+    value = os.environ.get(env_key, config.get(key, default))
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _auto_voice_stream_hook_factory(
@@ -1291,8 +1385,8 @@ class ReachyDialogueApp(ReachyMiniApp):
         playback_tester = RobotMicPlaybackTester(reachy_mini)
         behavior_config = _load_behavior_config()
         auto_voice_manager = AutoVoiceManager(
-            model_path=_auto_voice_model_path(),
-            config=_auto_voice_config(),
+            model_path=_auto_voice_model_path(behavior_config),
+            config=_auto_voice_config(behavior_config),
             service_url_getter=lambda: _snapshot(settings, settings_lock)[
                 "service_url"
             ],
@@ -2234,6 +2328,11 @@ def _register_auto_voice_routes(
         return {
             "model_path": str(manager.model_path),
             "model_exists": manager.model_path.exists(),
+            "input_gain": manager.config.input_gain,
+            "local_chunk_queue_size": manager.config.local_chunk_queue_size,
+            "robot_poll_seconds": manager.config.robot_poll_seconds,
+            "transcript_poll_seconds": manager.config.transcript_poll_seconds,
+            "service_timeout_seconds": manager.config.service_timeout_seconds,
             "vad": manager.config.vad.__dict__,
             "allow_robot": allow_robot,
         }
@@ -2279,12 +2378,20 @@ def _register_auto_voice_routes(
     def auto_voice_chunk(payload: AutoVoiceChunkPayload) -> dict[str, Any]:
         try:
             session = manager.get(payload.session_id)
-            session.submit_pcm16_base64(payload.audio_base64, payload.sample_rate)
+            accepted = session.submit_pcm16_base64(
+                payload.audio_base64,
+                payload.sample_rate,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="auto voice session not found") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return {"ok": True, "session_id": payload.session_id}
+        return {
+            "ok": True,
+            "accepted": accepted,
+            "session_id": payload.session_id,
+            "state": session.snapshot().state,
+        }
 
     @app.get("/api/auto-voice/events")
     def auto_voice_events(session_id: str) -> StreamingResponse:
@@ -2461,8 +2568,8 @@ def _build_web_only_app() -> FastAPI:
     behavior_config = _load_behavior_config()
     _disable_behavior_module(behavior_config, "action")
     auto_voice_manager = AutoVoiceManager(
-        model_path=_auto_voice_model_path(),
-        config=_auto_voice_config(),
+        model_path=_auto_voice_model_path(behavior_config),
+        config=_auto_voice_config(behavior_config),
         service_url_getter=lambda: _snapshot(settings, settings_lock)["service_url"],
         stream_hook_factory=_auto_voice_stream_hook_factory(
             None,
@@ -2537,6 +2644,24 @@ TAG_PATTERN = re.compile(r"\[([^:\]\r\n]+):([^\]\r\n]+)\]")
 def _default_behavior_config() -> dict[str, Any]:
     return {
         "enabled": True,
+        "auto_voice": {
+            "model_path": str(DEFAULT_VAD_MODEL_FILE),
+            "input_gain": 1.0,
+            "local_chunk_queue_size": 80,
+            "robot_poll_seconds": 0.01,
+            "transcript_poll_seconds": 0.3,
+            "service_timeout_seconds": 120,
+            "vad": {
+                "speech_threshold": 0.5,
+                "rms_speech_threshold": 0.01,
+                "min_speech_ms": 250,
+                "min_silence_ms": 900,
+                "pre_roll_ms": 300,
+                "post_roll_ms": 250,
+                "max_utterance_ms": 15000,
+                "cooldown_ms": 400,
+            },
+        },
         "modules": {
             "emoji": {
                 "enabled": True,
@@ -2647,6 +2772,13 @@ def _merge_behavior_config(config: dict[str, Any], loaded: dict[str, Any]) -> No
                 continue
             current = config["modules"].setdefault(str(module_name), {})
             current.update(module_config)
+        for key, value in loaded.items():
+            if key in {"enabled", "modules"}:
+                continue
+            if isinstance(value, dict) and isinstance(config.get(key), dict):
+                _deep_update(config[key], value)
+            else:
+                config[key] = value
         return
 
     # Legacy emoji_config.json support: use signal_map keys as emoji triggers.
@@ -2662,7 +2794,16 @@ def _merge_behavior_config(config: dict[str, Any], loaded: dict[str, Any]) -> No
         emoji_module["triggers"] = list(signal_map.keys())
 
 
+def _deep_update(current: dict[str, Any], updates: dict[str, Any]) -> None:
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(current.get(key), dict):
+            _deep_update(current[key], value)
+        else:
+            current[key] = value
+
+
 def _normalize_behavior_config(config: dict[str, Any], *, base_dir: Path) -> None:
+    _normalize_auto_voice_config(config, base_dir=base_dir)
     modules = config.get("modules")
     if not isinstance(modules, dict):
         modules = {}
@@ -2701,11 +2842,84 @@ def _normalize_behavior_config(config: dict[str, Any], *, base_dir: Path) -> Non
                 module_config[key] = str(_resolve_behavior_path(module_config[key], base_dir))
 
 
+def _normalize_auto_voice_config(config: dict[str, Any], *, base_dir: Path) -> None:
+    auto_voice = config.get("auto_voice")
+    if not isinstance(auto_voice, dict):
+        auto_voice = {}
+    default = _default_behavior_config()["auto_voice"]
+    merged = dict(default)
+    _deep_update(merged, auto_voice)
+    auto_voice = merged
+    if auto_voice.get("model_path"):
+        auto_voice["model_path"] = str(
+            _resolve_behavior_path(auto_voice["model_path"], base_dir)
+        )
+    auto_voice["local_chunk_queue_size"] = _coerce_int(
+        auto_voice.get("local_chunk_queue_size"), 80
+    )
+    auto_voice["input_gain"] = _coerce_float(auto_voice.get("input_gain"), 1.0)
+    auto_voice["robot_poll_seconds"] = _coerce_float(
+        auto_voice.get("robot_poll_seconds"), 0.01
+    )
+    auto_voice["transcript_poll_seconds"] = _coerce_float(
+        auto_voice.get("transcript_poll_seconds"), 0.3
+    )
+    auto_voice["service_timeout_seconds"] = _coerce_int(
+        auto_voice.get("service_timeout_seconds"), 120
+    )
+    vad = auto_voice.get("vad")
+    if not isinstance(vad, dict):
+        vad = {}
+    vad_defaults = default["vad"]
+    auto_voice["vad"] = {
+        "speech_threshold": _coerce_float(
+            vad.get("speech_threshold"), vad_defaults["speech_threshold"]
+        ),
+        "rms_speech_threshold": _coerce_float(
+            vad.get("rms_speech_threshold"),
+            vad_defaults["rms_speech_threshold"],
+        ),
+        "min_speech_ms": _coerce_int(
+            vad.get("min_speech_ms"), vad_defaults["min_speech_ms"]
+        ),
+        "min_silence_ms": _coerce_int(
+            vad.get("min_silence_ms"), vad_defaults["min_silence_ms"]
+        ),
+        "pre_roll_ms": _coerce_int(
+            vad.get("pre_roll_ms"), vad_defaults["pre_roll_ms"]
+        ),
+        "post_roll_ms": _coerce_int(
+            vad.get("post_roll_ms"), vad_defaults["post_roll_ms"]
+        ),
+        "max_utterance_ms": _coerce_int(
+            vad.get("max_utterance_ms"), vad_defaults["max_utterance_ms"]
+        ),
+        "cooldown_ms": _coerce_int(
+            vad.get("cooldown_ms"), vad_defaults["cooldown_ms"]
+        ),
+    }
+    config["auto_voice"] = auto_voice
+
+
 def _resolve_behavior_path(value: Any, base_dir: Path) -> Path:
     path = Path(str(value)).expanduser()
     if path.is_absolute():
         return path
     return (base_dir / path).resolve()
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _normalize_string_list(value: Any) -> list[str]:
@@ -2742,7 +2956,11 @@ def _public_behavior_config(config: dict[str, Any]) -> dict[str, Any]:
             "library_dir": module_config.get("library_dir"),
             "triggers": module_config.get("triggers"),
         }
-    return {"enabled": bool(config.get("enabled")), "modules": public_modules}
+    return {
+        "enabled": bool(config.get("enabled")),
+        "auto_voice": config.get("auto_voice"),
+        "modules": public_modules,
+    }
 
 
 def _public_emoji_config(config: dict[str, Any]) -> dict[str, Any]:
