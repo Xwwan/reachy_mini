@@ -14,8 +14,8 @@ import uuid
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
-from urllib.parse import quote, urljoin
+from typing import Any, Callable, Iterable, Mapping
+from urllib.parse import quote, urlencode, urljoin
 
 import numpy as np
 import requests
@@ -51,6 +51,11 @@ MIN_RECORDING_RMS = 0.0002
 LIVE_CHUNK_BYTES = 5120
 ROBOT_MIC_READY_TIMEOUT_SECONDS = 1.0
 ROBOT_MIC_POLL_SECONDS = 0.005
+TEXT_TTS_SEGMENT_PUNCTUATION = "。！？!?；;\n"
+TEXT_TTS_SEGMENT_MAX_CHARS = 80
+TEXT_TTS_TAG_PATTERN = re.compile(
+    r"\[\s*(?:emo|act|emotion|action|表情|动作)\s*[:：]\s*[^\]\r\n]+?\]"
+)
 
 
 @dataclass
@@ -1860,6 +1865,231 @@ def _playback_key_from_payload(
     )
 
 
+def _followup_playback_group_id(
+    payload: dict[str, Any],
+    existing: Mapping[str, Any] | None = None,
+) -> str:
+    candidates = _followup_playback_group_ids(payload)
+    if existing:
+        for candidate in candidates:
+            if candidate in existing:
+                return candidate
+    return candidates[0]
+
+
+def _followup_playback_group_ids(payload: dict[str, Any]) -> list[str]:
+    return _unique_strings(
+        [
+            _payload_playback_key(payload),
+            _payload_string(payload, "request_id"),
+            _payload_string(payload, "parent_request_id"),
+            _payload_string(payload, "conversation_id"),
+            "followup-default",
+        ]
+    )
+
+
+def _unique_strings(values: Iterable[str | None]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if isinstance(value, str) and value.strip() and value not in result:
+            result.append(value)
+    return result
+
+
+def _payload_has_audio(payload: dict[str, Any]) -> bool:
+    return any(
+        isinstance(payload.get(key), str) and bool(payload[key])
+        for key in ("audio_base64", "response_audio_base64", "tts_audio_base64")
+    )
+
+
+def _iter_text_tts_audio_payloads(
+    reply: str,
+    identity_payload: dict[str, Any],
+    *,
+    conversation_id: str,
+    default_sample_rate: int,
+    behavior_config: dict[str, Any],
+):
+    tts_text = _prepare_tts_text(reply)
+    if not tts_text.strip():
+        return
+    client = _build_text_tts_client(behavior_config)
+    stream_fn = getattr(client, "synthesize_stream", None)
+    chunks = (
+        stream_fn(tts_text)
+        if callable(stream_fn)
+        else [client.synthesize(tts_text)]
+    )
+    sample_rate = int(getattr(client, "sample_rate", default_sample_rate))
+    base_payload = {
+        "conversation_id": identity_payload.get("conversation_id") or conversation_id,
+        "request_id": identity_payload.get("request_id", ""),
+        "turn_id": (
+            identity_payload.get("assistant_turn_id")
+            or identity_payload.get("reply_turn_id")
+            or identity_payload.get("turn_id", "")
+        ),
+        "assistant_turn_id": (
+            identity_payload.get("assistant_turn_id")
+            or identity_payload.get("reply_turn_id")
+            or identity_payload.get("turn_id", "")
+        ),
+        "phase": "initial",
+        "audio_format": "pcm",
+        "sample_rate": sample_rate,
+        "segment_index": 0,
+    }
+    for index, chunk in enumerate(chunks):
+        if not chunk:
+            continue
+        data = dict(base_payload)
+        data.update(
+            {
+                "audio_base64": base64.b64encode(chunk).decode("ascii"),
+                "chunk_index": index,
+            }
+        )
+        yield data
+
+
+def _prepare_tts_text(text: str) -> str:
+    return TEXT_TTS_TAG_PATTERN.sub("", text).strip()
+
+
+def _build_text_tts_client(behavior_config: dict[str, Any]):
+    config = _text_tts_config(behavior_config)
+    api_key_env = _config_string(config, "api_key_env", "DASHSCOPE_API_KEY")
+    api_key = os.environ.get("REACHY_DIALOGUE_TTS_API_KEY") or os.environ.get(api_key_env)
+    if not api_key:
+        raise RuntimeError(
+            f"文字 TTS 需要环境变量 {api_key_env} 或 REACHY_DIALOGUE_TTS_API_KEY"
+        )
+    return DashScopeRealtimeTtsClient(
+        api_key=api_key,
+        realtime_url=_config_string(
+            config,
+            "realtime_url",
+            "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+        ),
+        model=_config_string(config, "model", "qwen3-tts-flash-realtime"),
+        voice=_config_string(config, "voice", "Cherry"),
+        sample_rate=_config_int(config, "sample_rate", OUTPUT_SAMPLE_RATE),
+        timeout_seconds=_config_float(config, "timeout_seconds", 60.0),
+    )
+
+
+def _text_tts_config(behavior_config: dict[str, Any]) -> dict[str, Any]:
+    audio_config = behavior_config.get("audio")
+    if isinstance(audio_config, dict) and isinstance(audio_config.get("tts"), dict):
+        return audio_config["tts"]
+    tts_config = behavior_config.get("tts")
+    if isinstance(tts_config, dict):
+        return tts_config
+    return {}
+
+
+def _config_string(config: dict[str, Any], key: str, default: str) -> str:
+    value = config.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} must be a non-empty string")
+    return value.strip()
+
+
+def _config_int(config: dict[str, Any], key: str, default: int) -> int:
+    value = config.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{key} must be a positive integer")
+    return value
+
+
+def _config_float(config: dict[str, Any], key: str, default: float) -> float:
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        raise ValueError(f"{key} must be a positive number")
+    if isinstance(value, (int, float)) and value > 0:
+        return float(value)
+    raise ValueError(f"{key} must be a positive number")
+
+
+@dataclass
+class DashScopeRealtimeTtsClient:
+    api_key: str
+    realtime_url: str
+    model: str
+    voice: str
+    sample_rate: int
+    timeout_seconds: float
+
+    def synthesize(self, text: str) -> bytes:
+        return b"".join(self.synthesize_stream(text))
+
+    def synthesize_stream(self, text: str):
+        if not isinstance(text, str) or not text.strip():
+            return
+        websocket = _load_websocket_client()
+        url = f"{self.realtime_url}?{urlencode({'model': self.model})}"
+        socket = websocket.create_connection(
+            url,
+            timeout=self.timeout_seconds,
+            header=[f"Authorization: Bearer {self.api_key}"],
+        )
+        try:
+            yield from self._iter_session_audio(socket, text)
+        finally:
+            socket.close()
+
+    def _iter_session_audio(self, socket: Any, text: str):
+        while True:
+            raw = socket.recv()
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            message = json.loads(raw)
+            msg_type = message.get("type")
+            if msg_type == "session.created":
+                socket.send(
+                    json.dumps(
+                        {
+                            "type": "session.update",
+                            "session": {
+                                "voice": self.voice,
+                                "response_format": "pcm",
+                                "sample_rate": self.sample_rate,
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                continue
+            if msg_type == "session.updated":
+                socket.send(
+                    json.dumps(
+                        {"type": "input_text_buffer.append", "text": text},
+                        ensure_ascii=False,
+                    )
+                )
+                socket.send(json.dumps({"type": "input_text_buffer.commit"}))
+                continue
+            if msg_type == "response.audio.delta":
+                delta = message.get("delta")
+                if isinstance(delta, str):
+                    yield base64.b64decode(delta)
+                continue
+            if msg_type == "response.done":
+                return
+            if msg_type == "error":
+                raise RuntimeError(f"DashScope TTS error: {message}")
+
+
+def _load_websocket_client() -> Any:
+    try:
+        import websocket
+    except ImportError as exc:  # pragma: no cover - depends on optional package
+        raise RuntimeError("文字 TTS 需要安装 websocket-client") from exc
+    return websocket
+
+
 def _payload_playback_key(payload: dict[str, Any]) -> str | None:
     request_id = _payload_string(payload, "request_id") or _payload_string(
         payload, "parent_request_id"
@@ -1975,6 +2205,7 @@ def _register_text_chat_routes(
             fallback_playback_key = _new_playback_key("text-chat")
             playback_key: str | None = None
             playback_completed = False
+            upstream_audio_seen = False
 
             def finish_events(
                 done_payload: dict[str, Any],
@@ -2067,6 +2298,31 @@ def _register_text_chat_routes(
                     reply = _reply_text_from_payload(data)
                     if reply:
                         yield _sse_frame("delta", {"delta": reply})
+                    if payload.tts_enabled and not _payload_has_audio(data):
+                        for audio_data in _iter_text_tts_audio_payloads(
+                            reply,
+                            data,
+                            conversation_id=conversation_id,
+                            default_sample_rate=int(current["tts_sample_rate"]),
+                            behavior_config=behavior_config,
+                        ):
+                            if playback_scheduler is not None:
+                                playback_key = playback_scheduler.enqueue_audio(
+                                    playback_key
+                                    or _playback_key_from_payload(
+                                        audio_data,
+                                        fallback_playback_key,
+                                    ),
+                                    audio_base64=audio_data["audio_base64"],
+                                    sample_rate=int(audio_data["sample_rate"]),
+                                    chunk_index=_optional_int(
+                                        audio_data.get("chunk_index")
+                                    ),
+                                    segment_index=_optional_int(
+                                        audio_data.get("segment_index")
+                                    ),
+                                )
+                            yield _sse_frame("audio", audio_data)
                     yield from finish_events(dict(data), reply, playback_key)
                     return
 
@@ -2075,6 +2331,7 @@ def _register_text_chat_routes(
                     event = str(item.get("event") or "message")
                     data = item.get("data") or {}
                     if event == "audio" and playback_scheduler is not None:
+                        upstream_audio_seen = upstream_audio_seen or _payload_has_audio(data)
                         audio_base64 = data.get("audio_base64")
                         if isinstance(audio_base64, str) and audio_base64:
                             playback_key = playback_scheduler.enqueue_audio(
@@ -2096,6 +2353,10 @@ def _register_text_chat_routes(
                             )
                         yield _sse_frame(event, data)
                         continue
+                    if event == "audio":
+                        upstream_audio_seen = upstream_audio_seen or _payload_has_audio(data)
+                        yield _sse_frame(event, data)
+                        continue
                     if event == "delta":
                         delta = str(data.get("delta") or "")
                         if delta:
@@ -2104,6 +2365,31 @@ def _register_text_chat_routes(
                         continue
                     if event == "done":
                         reply = _reply_text_from_payload(data) or "".join(reply_parts)
+                        if payload.tts_enabled and not upstream_audio_seen and not _payload_has_audio(data):
+                            for audio_data in _iter_text_tts_audio_payloads(
+                                reply,
+                                data,
+                                conversation_id=conversation_id,
+                                default_sample_rate=int(current["tts_sample_rate"]),
+                                behavior_config=behavior_config,
+                            ):
+                                if playback_scheduler is not None:
+                                    playback_key = playback_scheduler.enqueue_audio(
+                                        playback_key
+                                        or _playback_key_from_payload(
+                                            audio_data,
+                                            fallback_playback_key,
+                                        ),
+                                        audio_base64=audio_data["audio_base64"],
+                                        sample_rate=int(audio_data["sample_rate"]),
+                                        chunk_index=_optional_int(
+                                            audio_data.get("chunk_index")
+                                        ),
+                                        segment_index=_optional_int(
+                                            audio_data.get("segment_index")
+                                        ),
+                                    )
+                                yield _sse_frame("audio", audio_data)
                         yield from finish_events(dict(data), reply, playback_key)
                         return
                     yield _sse_frame(event, data)
@@ -2116,12 +2402,38 @@ def _register_text_chat_routes(
 
                 reply = "".join(reply_parts)
                 if reply:
+                    done_payload = {
+                        "conversation_id": conversation_id,
+                        "transcript": text,
+                        "reply": reply,
+                    }
+                    if payload.tts_enabled and not upstream_audio_seen:
+                        for audio_data in _iter_text_tts_audio_payloads(
+                            reply,
+                            done_payload,
+                            conversation_id=conversation_id,
+                            default_sample_rate=int(current["tts_sample_rate"]),
+                            behavior_config=behavior_config,
+                        ):
+                            if playback_scheduler is not None:
+                                playback_key = playback_scheduler.enqueue_audio(
+                                    playback_key
+                                    or _playback_key_from_payload(
+                                        audio_data,
+                                        fallback_playback_key,
+                                    ),
+                                    audio_base64=audio_data["audio_base64"],
+                                    sample_rate=int(audio_data["sample_rate"]),
+                                    chunk_index=_optional_int(
+                                        audio_data.get("chunk_index")
+                                    ),
+                                    segment_index=_optional_int(
+                                        audio_data.get("segment_index")
+                                    ),
+                                )
+                            yield _sse_frame("audio", audio_data)
                     yield from finish_events(
-                        {
-                            "conversation_id": conversation_id,
-                            "transcript": text,
-                            "reply": reply,
-                        },
+                        done_payload,
                         reply,
                         playback_key,
                     )
@@ -2158,22 +2470,48 @@ def _register_followup_routes(
     playback_scheduler: RobotAudioPlaybackScheduler | None = None,
     behavior_config: dict[str, Any] | None = None,
 ) -> None:
-    playback_states: dict[tuple[str, str, bool], dict[str, Any]] = {}
+    playback_states: dict[tuple[str, str, bool], dict[str, dict[str, Any]]] = {}
 
     def on_upstream_event(key: tuple[str, str, bool], item: dict) -> None:
         if playback_scheduler is None:
             return
-        state = playback_states.setdefault(
-            key,
+        if not key[2]:
+            return
+        event = str(item.get("event") or "message")
+        data = item.get("data") or {}
+        if (
+            event == "message"
+            and isinstance(data, dict)
+            and isinstance(data.get("event"), str)
+        ):
+            nested_data = data.get("data")
+            event = str(data["event"])
+            data = nested_data if isinstance(nested_data, dict) else data
+
+        if event in {"followup_error", "error"}:
+            for state in playback_states.pop(key, {}).values():
+                playback_scheduler.abort(
+                    state.get("playback_key") or state.get("fallback_playback_key")
+                )
+            return
+
+        if event not in {"audio", "followup_done", "done", "followup"}:
+            return
+
+        group_id = _followup_playback_group_id(
+            data,
+            existing=playback_states.get(key, {}),
+        )
+        state = playback_states.setdefault(key, {}).setdefault(
+            group_id,
             {
                 "playback_key": None,
                 "fallback_playback_key": _new_playback_key("followup"),
                 "completed": False,
             },
         )
-        event = str(item.get("event") or "message")
-        data = item.get("data") or {}
-        if event == "audio":
+
+        def enqueue_payload_audio() -> None:
             audio_base64 = data.get("audio_base64")
             if isinstance(audio_base64, str) and audio_base64:
                 state["playback_key"] = playback_scheduler.enqueue_audio(
@@ -2191,24 +2529,27 @@ def _register_followup_routes(
                     chunk_index=_optional_int(data.get("chunk_index")),
                     segment_index=_optional_int(data.get("segment_index")),
                 )
-        elif event == "followup_done":
+
+        if event == "audio":
+            enqueue_payload_audio()
+        elif event in {"followup_done", "done"}:
+            enqueue_payload_audio()
             state["playback_key"] = state["playback_key"] or _playback_key_from_payload(
                 data,
                 state["fallback_playback_key"],
             )
             playback_scheduler.complete(state["playback_key"])
             state["completed"] = True
-            playback_states.pop(key, None)
+            states = playback_states.get(key)
+            if states is not None:
+                states.pop(group_id, None)
+                if not states:
+                    playback_states.pop(key, None)
         elif event == "followup":
             state["playback_key"] = state["playback_key"] or _playback_key_from_payload(
                 data,
                 state["fallback_playback_key"],
             )
-        elif event in {"followup_error", "error"}:
-            playback_scheduler.abort(
-                state.get("playback_key") or state.get("fallback_playback_key")
-            )
-            playback_states.pop(key, None)
 
     followup_hub = FollowupStreamHub(on_upstream_event=on_upstream_event)
 
@@ -2230,6 +2571,14 @@ def _register_followup_routes(
             ):
                 event = str(item.get("event") or "message")
                 data = item.get("data") or {}
+                if (
+                    event == "message"
+                    and isinstance(data, dict)
+                    and isinstance(data.get("event"), str)
+                ):
+                    nested_data = data.get("data")
+                    event = str(data["event"])
+                    data = nested_data if isinstance(nested_data, dict) else data
                 if event == "followup" and behavior_config is not None:
                     for result in _trigger_behaviors_from_text(
                         str(data.get("reply") or ""),

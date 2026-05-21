@@ -156,6 +156,8 @@ const chatState = {
     followupConnected: false,
     eventLog: [],
     seenFollowups: new Set(),
+    followupMessages: new Map(),
+    followupPlaybackGroups: new Map(),
     followupPlaybackKey: null,
     followupPlaybackFallbackKey: null,
 };
@@ -289,7 +291,7 @@ function connectFollowups() {
     }
     const params = new URLSearchParams({
         conversation_id: conversationId,
-        tts_enabled: "true",
+        tts_enabled: els.textTtsEnabled.checked ? "true" : "false",
     });
     const url = `/api/followups/stream?${params.toString()}`;
     const source = new EventSource(url);
@@ -307,6 +309,8 @@ function connectFollowups() {
 
     for (const eventName of [
         "message",
+        "meta",
+        "delta",
         "followup",
         "supplement",
         "correction",
@@ -314,6 +318,7 @@ function connectFollowups() {
         "followup_done",
         "behavior",
         "done",
+        "ping",
         "followup_error",
     ]) {
         source.addEventListener(eventName, (event) => {
@@ -350,37 +355,40 @@ function parseEventSourcePayload(raw) {
 
 function handleFollowupPayload(payload, eventName) {
     appendEventLog(`followup:${eventName}`, payload);
+    if (eventName === "message" && payload && typeof payload.event === "string") {
+        const nestedPayload = payload.data && typeof payload.data === "object"
+            ? payload.data
+            : payload;
+        handleFollowupPayload(nestedPayload, payload.event);
+        return;
+    }
     if (eventName === "audio") {
-        if (appMode.web_only || currentVoiceMode() === "local") {
-            chatState.followupPlaybackFallbackKey =
-                chatState.followupPlaybackFallbackKey || makeId("followup-audio");
-            chatState.followupPlaybackKey = localAudioPlaybackScheduler.enqueueAudio(
-                payload,
-                {
-                    fallbackKey:
-                        chatState.followupPlaybackKey
-                        || chatState.followupPlaybackFallbackKey,
-                },
-            );
+        if (enqueueFollowupAudio(payload)) {
+            setStatus("正在播放记忆补充语音");
+        } else if (payload.audio_base64) {
+            setStatus("正在播放机器人记忆补充语音");
+        } else {
+            setStatus("收到记忆补充音频事件");
         }
-        setStatus("正在接收记忆补充语音");
         return;
     }
     if (eventName === "followup_done") {
-        if (appMode.web_only || currentVoiceMode() === "local") {
-            chatState.followupPlaybackKey = localAudioPlaybackScheduler.complete(
-                payload,
-                {
-                    fallbackKey:
-                        chatState.followupPlaybackKey
-                        || chatState.followupPlaybackFallbackKey
-                        || makeId("followup-audio"),
-                },
-            );
+        enqueueFollowupAudio(payload);
+        const message = findFollowupMessage(payload);
+        if (message) {
+            message.status = "done";
+            renderTimeline();
+            renderInspector();
         }
-        chatState.followupPlaybackKey = null;
-        chatState.followupPlaybackFallbackKey = null;
-        setStatus("记忆补充语音完成");
+        completeFollowupPlayback(payload);
+        setStatus("记忆补充完成");
+        return;
+    }
+    if (eventName === "done") {
+        enqueueFollowupAudio(payload);
+        completeFollowupPlayback(payload);
+    }
+    if (eventName === "ping") {
         return;
     }
     if (eventName === "behavior") {
@@ -392,11 +400,7 @@ function handleFollowupPayload(payload, eventName) {
         return;
     }
     if (eventName === "followup_error" || payload.error || payload.message === "error") {
-        localAudioPlaybackScheduler.abort(
-            chatState.followupPlaybackKey || chatState.followupPlaybackFallbackKey,
-        );
-        chatState.followupPlaybackKey = null;
-        chatState.followupPlaybackFallbackKey = null;
+        abortFollowupPlayback();
         setStatus(payload.error || payload.message || "follow-up 通道错误");
         return;
     }
@@ -409,7 +413,24 @@ function handleFollowupPayload(payload, eventName) {
         markRequestRetrieval(requestId, "completed");
     }
 
-    const followupType = payload.followup_type || eventName;
+    const followupType = normalizeFollowupType(payload, eventName);
+    if (eventName === "meta") {
+        ensureFollowupMessage(payload, followupType);
+        setStatus("正在接收记忆补充");
+        return;
+    }
+    if (eventName === "delta") {
+        const delta = followupDelta(payload);
+        if (!delta) {
+            return;
+        }
+        const message = ensureFollowupMessage(payload, followupType);
+        message.content += delta;
+        message.status = "streaming";
+        renderTimeline();
+        renderInspector();
+        return;
+    }
     if (followupType === "none" || !payload.reply) {
         renderTimeline();
         renderInspector();
@@ -428,11 +449,182 @@ function handleFollowupPayload(payload, eventName) {
     }
     chatState.seenFollowups.add(fingerprint);
 
-    addMessage({
+    const message = ensureFollowupMessage(payload, followupType);
+    message.content = String(payload.reply || "");
+    message.status = "done";
+    message.turnId = payload.followup_turn_id || payload.assistant_turn_id || message.turnId;
+    renderTimeline();
+    renderInspector();
+    setStatus(formatFollowupStatus(followupType));
+}
+
+function enqueueFollowupAudio(payload) {
+    if (!payload.audio_base64) {
+        return false;
+    }
+    if (currentVoiceMode() !== "local") {
+        return false;
+    }
+    const state = ensureFollowupPlaybackState(payload);
+    state.playbackKey = localAudioPlaybackScheduler.enqueueAudio(
+        payload,
+        {
+            fallbackKey: state.playbackKey || state.fallbackKey,
+        },
+    );
+    chatState.followupPlaybackKey = state.playbackKey;
+    chatState.followupPlaybackFallbackKey = state.fallbackKey;
+    return true;
+}
+
+function completeFollowupPlayback(payload) {
+    const groupId = findFollowupPlaybackGroupId(payload);
+    const state = chatState.followupPlaybackGroups.get(groupId);
+    const fallbackKey = state?.playbackKey || state?.fallbackKey;
+    if (currentVoiceMode() === "local" && fallbackKey) {
+        const playbackKey = localAudioPlaybackScheduler.complete(
+            payload,
+            {
+                fallbackKey,
+            },
+        );
+        if (state) {
+            state.playbackKey = playbackKey;
+        }
+    }
+    chatState.followupPlaybackGroups.delete(groupId);
+    syncLegacyFollowupPlaybackState();
+}
+
+function abortFollowupPlayback() {
+    if (chatState.followupPlaybackGroups.size === 0) {
+        localAudioPlaybackScheduler.abort(
+            chatState.followupPlaybackKey || chatState.followupPlaybackFallbackKey,
+        );
+    }
+    for (const state of chatState.followupPlaybackGroups.values()) {
+        localAudioPlaybackScheduler.abort(state.playbackKey || state.fallbackKey);
+    }
+    chatState.followupPlaybackGroups.clear();
+    chatState.followupPlaybackKey = null;
+    chatState.followupPlaybackFallbackKey = null;
+}
+
+function ensureFollowupPlaybackState(payload) {
+    const groupId = followupPlaybackGroupId(payload);
+    if (!chatState.followupPlaybackGroups.has(groupId)) {
+        chatState.followupPlaybackGroups.set(groupId, {
+            playbackKey: null,
+            fallbackKey: makeId("followup-local-audio"),
+        });
+    }
+    return chatState.followupPlaybackGroups.get(groupId);
+}
+
+function followupPlaybackGroupId(payload) {
+    return followupPlaybackGroupIds(payload)[0];
+}
+
+function findFollowupPlaybackGroupId(payload) {
+    return followupPlaybackGroupIds(payload).find((groupId) =>
+        chatState.followupPlaybackGroups.has(groupId)
+    ) || followupPlaybackGroupId(payload);
+}
+
+function followupPlaybackGroupIds(payload) {
+    return uniqueStrings([
+        playbackKeyFromPayload(payload),
+        payloadString(payload, "request_id"),
+        payloadString(payload, "parent_request_id"),
+        payloadString(payload, "conversation_id"),
+        "followup-default",
+    ]);
+}
+
+function uniqueStrings(values) {
+    const result = [];
+    for (const value of values) {
+        if (typeof value === "string" && value.trim() && !result.includes(value)) {
+            result.push(value);
+        }
+    }
+    return result;
+}
+
+function syncLegacyFollowupPlaybackState() {
+    const next = chatState.followupPlaybackGroups.values().next().value;
+    chatState.followupPlaybackKey = next?.playbackKey || null;
+    chatState.followupPlaybackFallbackKey = next?.fallbackKey || null;
+}
+
+function normalizeFollowupType(payload, eventName) {
+    if (payload.followup_type) {
+        return payload.followup_type;
+    }
+    if (eventName === "correction" || eventName === "supplement") {
+        return eventName;
+    }
+    return "supplement";
+}
+
+function followupDelta(payload) {
+    return String(
+        payload.delta
+        || payload.text_delta
+        || payload.reply_delta
+        || payload.content_delta
+        || "",
+    );
+}
+
+function followupMessageKey(payload, followupType) {
+    const requestId = payload.request_id || payload.parent_request_id || "";
+    const parentUserTurnId = payload.parent_user_turn_id || "";
+    const parentInitialReplyTurnId = payload.parent_initial_reply_turn_id || "";
+    const turnId = payload.followup_turn_id || payload.assistant_turn_id || "";
+    return [
+        requestId,
+        parentUserTurnId,
+        parentInitialReplyTurnId,
+        turnId,
+        followupType || "supplement",
+    ].join("|");
+}
+
+function findFollowupMessage(payload) {
+    const followupType = normalizeFollowupType(payload, "followup");
+    const key = followupMessageKey(payload, followupType);
+    const messageId = chatState.followupMessages.get(key);
+    if (messageId) {
+        return getMessage(messageId);
+    }
+    const requestId = payload.request_id || payload.parent_request_id;
+    return chatState.messages.find((message) =>
+        message.kind === "followup"
+        && message.status === "streaming"
+        && (!requestId || message.parentRequestId === requestId || message.requestId === requestId)
+        && (!followupType || message.followupType === followupType)
+    ) || null;
+}
+
+function ensureFollowupMessage(payload, followupType) {
+    const key = followupMessageKey(payload, followupType);
+    const existingId = chatState.followupMessages.get(key);
+    const existing = getMessage(existingId);
+    if (existing) {
+        return existing;
+    }
+    const requestId = payload.request_id || payload.parent_request_id;
+    const fallback = findFollowupMessage(payload);
+    if (fallback) {
+        chatState.followupMessages.set(key, fallback.id);
+        return fallback;
+    }
+    const message = addMessage({
         id: makeId("followup"),
         role: "assistant",
         kind: "followup",
-        content: String(payload.reply || ""),
+        content: "",
         requestId,
         parentRequestId: requestId,
         parentUserTurnId: payload.parent_user_turn_id,
@@ -440,10 +632,11 @@ function handleFollowupPayload(payload, eventName) {
         originalUserQuery: payload.original_user_query,
         initialReply: payload.initial_reply,
         followupType,
-        status: "done",
+        status: "streaming",
         createdAt: Date.now(),
     });
-    setStatus(formatFollowupStatus(followupType));
+    chatState.followupMessages.set(key, message.id);
+    return message;
 }
 
 async function loadVolumeControls() {
@@ -663,6 +856,31 @@ async function sendManualText() {
             transcriptFallback: text,
             userMessageId: exchange.userMessage.id,
             assistantMessageId: exchange.assistantMessage.id,
+            onAudio: (data) => {
+                if (currentVoiceMode() === "local") {
+                    exchange.playbackKey = localAudioPlaybackScheduler.enqueueAudio(
+                        data,
+                        {
+                            fallbackKey:
+                                exchange.playbackKey
+                                || exchange.playbackFallbackKey
+                                || makeId("text-local-audio"),
+                        },
+                    );
+                }
+            },
+            onDone: (data) => {
+                if (currentVoiceMode() === "local") {
+                    const fallbackKey =
+                        exchange.playbackKey
+                        || exchange.playbackFallbackKey
+                        || makeId("text-local-audio");
+                    exchange.playbackKey = localAudioPlaybackScheduler.complete(
+                        data,
+                        { fallbackKey },
+                    );
+                }
+            },
         });
         els.manualText.value = "";
     } catch (error) {
@@ -2256,6 +2474,10 @@ els.playbackTestBtn.addEventListener("click", () => {
 
 els.sendTextBtn.addEventListener("click", () => {
     sendManualText().catch((error) => setStatus(error.message || String(error)));
+});
+
+els.textTtsEnabled.addEventListener("change", () => {
+    connectFollowups();
 });
 
 els.manualText.addEventListener("keydown", (event) => {

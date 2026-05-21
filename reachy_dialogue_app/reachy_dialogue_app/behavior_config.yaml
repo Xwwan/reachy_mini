@@ -15,7 +15,7 @@ auto_voice:
     pre_roll_ms: 300
     post_roll_ms: 250
     max_utterance_ms: 15000
-    cooldown_ms: 400
+    cooldown_ms: 300
 
 modules:
   emoji:
