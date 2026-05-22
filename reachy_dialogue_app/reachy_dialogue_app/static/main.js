@@ -16,6 +16,8 @@ let autoVoiceSessionId = null;
 let autoVoiceSource = null;
 let autoVoiceExchange = null;
 let autoVoiceInputOpen = false;
+let autoVoiceGateState = "awake";
+let autoVoiceWakeGateEnabled = false;
 
 let localAudioContext = null;
 let localPlaybackContext = null;
@@ -1170,6 +1172,8 @@ async function startAutoVoice() {
 
     autoVoiceSessionId = payload.session_id;
     isAutoVoiceActive = true;
+    autoVoiceGateState = payload.gate_state || "awake";
+    autoVoiceWakeGateEnabled = Boolean(payload.wake_gate_enabled);
     autoVoiceInputOpen = payload.state === "listening" || payload.state === "user_speaking";
     isRecording = true;
     activeVoiceMode = inputMode === "local" ? "auto-local" : "auto-robot";
@@ -1192,6 +1196,7 @@ async function startAutoVoice() {
     for (const eventName of [
         "snapshot",
         "state",
+        "gate_state",
         "level",
         "speech_start",
         "speech_end",
@@ -1206,6 +1211,10 @@ async function startAutoVoice() {
         "behavior",
         "done",
         "playback_done",
+        "wake_detected",
+        "wake_ignored",
+        "sleep_detected",
+        "wake_timeout",
         "warning",
         "error",
     ]) {
@@ -1324,6 +1333,8 @@ async function stopAutoVoice() {
     autoVoiceSessionId = null;
     autoVoiceExchange = null;
     autoVoiceInputOpen = false;
+    autoVoiceGateState = "awake";
+    autoVoiceWakeGateEnabled = false;
     els.autoVoiceBtn.textContent = "进入对话模式";
     els.autoVoiceBtn.classList.remove("recording");
     els.autoVoiceStatus.textContent = "手动录音";
@@ -1338,6 +1349,25 @@ async function stopAutoVoice() {
 
 function handleAutoVoiceEvent(event, data) {
     appendEventLog(`auto:${event}`, data);
+    if (event === "snapshot") {
+        autoVoiceGateState = data.gate_state || autoVoiceGateState;
+        autoVoiceWakeGateEnabled = Boolean(data.wake_gate_enabled);
+        els.autoVoiceStatus.textContent = autoVoiceStateText(data.state);
+        return;
+    }
+    if (event === "gate_state") {
+        autoVoiceGateState = data.gate_state || autoVoiceGateState;
+        autoVoiceWakeGateEnabled = data.enabled !== false;
+        els.autoVoiceStatus.textContent = autoVoiceStateText("listening");
+        if (autoVoiceGateState === "waiting_wake") {
+            setStatus("自动对话：等待唤醒词");
+            els.liveTranscript.textContent = "等待唤醒词...";
+        } else {
+            setStatus("自动对话：已唤醒，正在听");
+            els.liveTranscript.textContent = "已唤醒，正在听...";
+        }
+        return;
+    }
     if (event === "state") {
         autoVoiceInputOpen = data.state === "listening" || data.state === "user_speaking";
         if (!autoVoiceInputOpen) {
@@ -1358,6 +1388,10 @@ function handleAutoVoiceEvent(event, data) {
     }
     if (event === "speech_start") {
         autoVoiceInputOpen = true;
+        if ((data.gate_state || autoVoiceGateState) === "waiting_wake") {
+            els.liveTranscript.textContent = "正在听唤醒词...";
+            return;
+        }
         autoVoiceExchange = createAutoVoiceExchange("(正在说话...)");
         els.liveTranscript.textContent = "检测到语音，正在听...";
         return;
@@ -1366,6 +1400,10 @@ function handleAutoVoiceEvent(event, data) {
         autoVoiceInputOpen = false;
         localSendQueue = [];
         localPendingBytes = new Uint8Array(0);
+        if ((data.gate_state || autoVoiceGateState) === "waiting_wake") {
+            els.liveTranscript.textContent = "正在确认唤醒词...";
+            return;
+        }
         els.liveTranscript.textContent = "语音结束，正在识别...";
         return;
     }
@@ -1385,6 +1423,11 @@ function handleAutoVoiceEvent(event, data) {
     }
     if (event === "transcript") {
         const text = data.transcript || data.text || "";
+        if ((data.gate_state || autoVoiceGateState) === "waiting_wake") {
+            els.transcript.textContent = text || "(未识别到文本)";
+            els.liveTranscript.textContent = text ? `听到：${text}` : "等待唤醒词...";
+            return;
+        }
         const exchange = ensureAutoVoiceExchange(text || "(未识别到文本)");
         if (exchange.userMessage) {
             exchange.userMessage.content = text || "(未识别到文本)";
@@ -1446,6 +1489,17 @@ function handleAutoVoiceEvent(event, data) {
             assistantMessageId: exchange.assistantMessage.id,
         });
         if (currentVoiceMode() === "local") {
+            if (data.audio_base64) {
+                autoVoiceExchange.playbackKey = localAudioPlaybackScheduler.enqueueAudio(
+                    data,
+                    {
+                        fallbackKey:
+                            autoVoiceExchange.playbackKey
+                            || autoVoiceExchange.playbackFallbackKey
+                            || makeId("auto-local-audio"),
+                    },
+                );
+            }
             autoVoiceExchange.playbackKey = localAudioPlaybackScheduler.complete(
                 data,
                 {
@@ -1464,6 +1518,36 @@ function handleAutoVoiceEvent(event, data) {
         autoVoiceExchange = null;
         autoVoiceInputOpen = false;
         els.autoVoiceStatus.textContent = "正在听";
+        return;
+    }
+    if (event === "wake_detected") {
+        autoVoiceGateState = "awake";
+        discardAutoVoiceExchange();
+        els.autoVoiceStatus.textContent = "已唤醒";
+        els.liveTranscript.textContent = data.reply || "已唤醒，正在听...";
+        setStatus(`唤醒成功：${data.transcript || ""}`.trim());
+        return;
+    }
+    if (event === "wake_ignored") {
+        discardAutoVoiceExchange();
+        els.autoVoiceStatus.textContent = "等待唤醒";
+        els.liveTranscript.textContent = data.transcript ? `未唤醒：${data.transcript}` : "等待唤醒词...";
+        return;
+    }
+    if (event === "sleep_detected") {
+        autoVoiceGateState = "waiting_wake";
+        discardAutoVoiceExchange();
+        els.autoVoiceStatus.textContent = "已休息";
+        els.liveTranscript.textContent = data.reply || "已退出，等待唤醒词...";
+        setStatus(`退出唤醒会话：${data.transcript || ""}`.trim());
+        return;
+    }
+    if (event === "wake_timeout") {
+        autoVoiceGateState = "waiting_wake";
+        discardAutoVoiceExchange();
+        els.autoVoiceStatus.textContent = "等待唤醒";
+        els.liveTranscript.textContent = data.reply || "长时间无输入，已回到等待唤醒。";
+        setStatus("自动对话：空闲超时，等待唤醒词");
         return;
     }
     if (event === "warning") {
@@ -1501,7 +1585,34 @@ function ensureAutoVoiceExchange(text) {
     return createAutoVoiceExchange(text || "(语音输入)");
 }
 
+function discardAutoVoiceExchange() {
+    const userId = autoVoiceExchange?.userMessage?.id;
+    const assistantId = autoVoiceExchange?.assistantMessage?.id;
+    if (userId || assistantId) {
+        chatState.messages = chatState.messages.filter(
+            (message) => message.id !== userId && message.id !== assistantId,
+        );
+        for (const [requestId, request] of chatState.requests.entries()) {
+            if (
+                request.userMessageId === userId
+                || request.assistantMessageId === assistantId
+            ) {
+                chatState.requests.delete(requestId);
+            }
+        }
+        renderTimeline();
+        renderInspector();
+    }
+    autoVoiceExchange = null;
+}
+
 function autoVoiceStateText(state) {
+    if (autoVoiceWakeGateEnabled && state === "listening" && autoVoiceGateState === "waiting_wake") {
+        return "等待唤醒";
+    }
+    if (autoVoiceWakeGateEnabled && state === "listening" && autoVoiceGateState === "awake") {
+        return "已唤醒，正在听";
+    }
     const labels = {
         starting: "正在启动",
         listening: "正在听",

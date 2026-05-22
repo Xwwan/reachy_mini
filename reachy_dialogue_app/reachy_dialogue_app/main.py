@@ -1173,6 +1173,7 @@ def _register_auto_voice_routes(
             "robot_poll_seconds": manager.config.robot_poll_seconds,
             "transcript_poll_seconds": manager.config.transcript_poll_seconds,
             "service_timeout_seconds": manager.config.service_timeout_seconds,
+            "wake_gate": manager.config.wake_gate.__dict__,
             "vad": manager.config.vad.__dict__,
             "allow_robot": allow_robot,
         }
@@ -1210,7 +1211,10 @@ def _register_auto_voice_routes(
             "state": snapshot.state,
             "conversation_id": snapshot.conversation_id,
             "tts_enabled": snapshot.tts_enabled,
+            "gate_state": snapshot.gate_state,
+            "wake_gate_enabled": snapshot.wake_gate_enabled,
             "vad": manager.config.vad.__dict__,
+            "wake_gate": manager.config.wake_gate.__dict__,
             "model_path": str(manager.model_path),
         }
 

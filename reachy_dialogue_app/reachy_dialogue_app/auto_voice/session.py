@@ -4,6 +4,7 @@ import base64
 import queue
 import threading
 import time
+import unicodedata
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -22,6 +23,7 @@ from ..vad import (
 from .sse import audio_duration_from_payload, iter_sse_events, json_or_error
 from .types import (
     AutoVoiceConfig,
+    AutoVoiceGateState,
     AutoVoiceMode,
     AutoVoiceSnapshot,
     RobotAudioSource,
@@ -70,6 +72,10 @@ class AutoVoiceSession:
         self.active_live_session_id: str | None = None
         self.active_utterance_id: str | None = None
         self.last_transcript = ""
+        self.gate_state: AutoVoiceGateState = (
+            "waiting_wake" if self.config.wake_gate.enabled else "awake"
+        )
+        self.last_awake_activity = time.monotonic()
         self.thread.start()
 
     def submit_pcm16_base64(self, audio_base64: str, sample_rate: int) -> bool:
@@ -111,6 +117,8 @@ class AutoVoiceSession:
                 conversation_id=self.conversation_id,
                 tts_enabled=self.tts_enabled,
                 utterance_count=self.utterance_count,
+                gate_state=self.gate_state,
+                wake_gate_enabled=self.config.wake_gate.enabled,
                 last_error=self.last_error,
                 speech_probability=self.segmenter.last_probability,
                 rms=self.segmenter.last_rms,
@@ -119,6 +127,14 @@ class AutoVoiceSession:
 
     def event_stream(self) -> Iterable[tuple[str, dict[str, Any]]]:
         self._emit("snapshot", asdict(self.snapshot()))
+        self._emit(
+            "gate_state",
+            {
+                "session_id": self.session_id,
+                "gate_state": self.gate_state,
+                "enabled": self.config.wake_gate.enabled,
+            },
+        )
         while not self.stop_event.is_set():
             item = self.events.get()
             if item is None:
@@ -132,6 +148,7 @@ class AutoVoiceSession:
                 samples = self._read_samples()
                 if samples is None:
                     continue
+                self._check_wake_idle_timeout()
                 if self.state not in {"listening", "user_speaking"}:
                     continue
                 if self.active_live_session_id is not None:
@@ -148,8 +165,10 @@ class AutoVoiceSession:
                         "rms": vad_event.rms,
                         "peak": vad_event.peak,
                         "duration_seconds": vad_event.duration_seconds,
+                        "gate_state": self.gate_state,
                     }
                     if vad_event.event == "speech_start":
+                        self._touch_awake_activity()
                         self._set_state("user_speaking")
                         self._start_streaming_transcription(vad_event.audio)
                         self._emit("speech_start", payload)
@@ -213,6 +232,7 @@ class AutoVoiceSession:
                 "session_id": self.session_id,
                 "utterance_id": utterance_id,
                 "live_session_id": live_session_id,
+                "gate_state": self.gate_state,
             },
         )
         if initial_audio is not None and initial_audio.size:
@@ -229,7 +249,202 @@ class AutoVoiceSession:
             self._set_state("listening")
             return
         self._emit_live_transcript(force=True)
-        self._process_live_session(live_session_id)
+        if self.config.wake_gate.enabled:
+            self._process_gate_controlled_session(live_session_id)
+        else:
+            self._process_live_session(live_session_id)
+
+    def _process_gate_controlled_session(self, live_session_id: str) -> None:
+        self._set_state("transcribing")
+
+        try:
+            data = self._finish_transcript_only(live_session_id)
+            transcript = _reply_text_from_keys(
+                data,
+                ("transcript", "text", "final_transcript"),
+            ).strip()
+            self._emit(
+                "transcript",
+                {
+                    **data,
+                    "session_id": self.session_id,
+                    "live_session_id": live_session_id,
+                    "utterance_id": self.active_utterance_id,
+                    "transcript": transcript,
+                    "is_final": True,
+                    "gate_state": self.gate_state,
+                },
+            )
+
+            if self.gate_state == "waiting_wake":
+                if self._matches_wake_phrase(transcript):
+                    self._touch_awake_activity()
+                    self._set_gate_state(
+                        "awake",
+                        reason="wake_phrase",
+                        transcript=transcript,
+                    )
+                    self._emit(
+                        "wake_detected",
+                        {
+                            "session_id": self.session_id,
+                            "transcript": transcript,
+                            "reply": self.config.wake_gate.wake_reply,
+                        },
+                    )
+                else:
+                    self._emit(
+                        "wake_ignored",
+                        {
+                            "session_id": self.session_id,
+                            "transcript": transcript,
+                        },
+                    )
+                self._cooldown_then_listen()
+                return
+
+            if self._matches_exit_phrase(transcript):
+                self._set_gate_state(
+                    "waiting_wake",
+                    reason="exit_phrase",
+                    transcript=transcript,
+                )
+                self._emit(
+                    "sleep_detected",
+                    {
+                        "session_id": self.session_id,
+                        "transcript": transcript,
+                        "reply": self.config.wake_gate.sleep_reply,
+                    },
+                )
+                self._cooldown_then_listen()
+                return
+
+            if not transcript:
+                self._emit(
+                    "warning",
+                    {"message": "没有识别到可发送给对话服务的文本。"},
+                )
+                self._cooldown_then_listen()
+                return
+
+            self._touch_awake_activity()
+            self._process_text_chat_session(transcript)
+        except Exception as exc:
+            with self.lock:
+                self.last_error = str(exc) or exc.__class__.__name__
+            self._emit("error", {"message": self.last_error})
+            self._set_state("listening")
+        finally:
+            self.active_live_session_id = None
+            self.active_utterance_id = None
+            self.last_transcript = ""
+
+    def _process_text_chat_session(self, transcript: str) -> None:
+        response: requests.Response | None = None
+        output_audio_seconds = 0.0
+        reply_parts: list[str] = []
+        try:
+            self._set_state("assistant_streaming")
+            response = requests.post(
+                urljoin(self.service_url, "/chat/stream"),
+                json={
+                    "conversation_id": self.conversation_id,
+                    "message": transcript,
+                    "tts_enabled": self.tts_enabled,
+                },
+                stream=True,
+                timeout=(10, self.config.service_timeout_seconds),
+            )
+            if response.status_code == 404:
+                response.close()
+                response = None
+                self._process_text_chat_json_fallback(transcript)
+                return
+
+            for event, data in iter_sse_events(response):
+                if event == "delta":
+                    delta = str(data.get("delta") or "")
+                    if delta:
+                        reply_parts.append(delta)
+                if event == "audio":
+                    output_audio_seconds += audio_duration_from_payload(data)
+                if event == "done":
+                    data = dict(data)
+                    data.setdefault("transcript", transcript)
+                    if not _reply_text_from_keys(data, ("reply", "response", "answer", "text")):
+                        data["reply"] = "".join(reply_parts)
+                barrier: threading.Event | None = None
+                extras: list[tuple[str, dict[str, Any]]] = []
+                if self.stream_hook is not None and event in {"audio", "done"}:
+                    extras, barrier = self.stream_hook(event, data)
+                for extra_event, extra_payload in extras:
+                    self._emit(extra_event, extra_payload)
+                self._emit(event, data)
+                if event == "done":
+                    self._set_state("speaking" if output_audio_seconds > 0 else "cooldown")
+                    if barrier is not None:
+                        barrier.wait(timeout=self.config.service_timeout_seconds)
+                    elif output_audio_seconds > 0:
+                        time.sleep(max(0.0, output_audio_seconds + 0.2))
+                    self._touch_awake_activity()
+                    self._emit("playback_done", {"ok": True, "session_id": self.session_id})
+                    self._cooldown_then_listen()
+                    return
+                if event == "error":
+                    self._set_state("listening")
+                    return
+            self._cooldown_then_listen()
+        finally:
+            if response is not None:
+                response.close()
+
+    def _process_text_chat_json_fallback(self, transcript: str) -> None:
+        request_variants = (
+            {
+                "conversation_id": self.conversation_id,
+                "message": transcript,
+                "tts_enabled": self.tts_enabled,
+            },
+            {
+                "conversation_id": self.conversation_id,
+                "text": transcript,
+                "tts_enabled": self.tts_enabled,
+            },
+        )
+        response: requests.Response | None = None
+        for index, body in enumerate(request_variants):
+            response = requests.post(
+                urljoin(self.service_url, "/chat"),
+                json=body,
+                timeout=self.config.service_timeout_seconds,
+            )
+            if response.ok:
+                break
+            if response.status_code not in {400, 422} or index == len(request_variants) - 1:
+                break
+        assert response is not None
+        data = json_or_error(response)
+        reply = _reply_text_from_keys(data, ("reply", "response", "answer", "text"))
+        if reply:
+            self._emit("delta", {"delta": reply})
+        done_data = dict(data)
+        done_data.setdefault("conversation_id", self.conversation_id)
+        done_data.setdefault("transcript", transcript)
+        done_data.setdefault("reply", reply)
+        barrier: threading.Event | None = None
+        extras: list[tuple[str, dict[str, Any]]] = []
+        if self.stream_hook is not None:
+            extras, barrier = self.stream_hook("done", done_data)
+        for extra_event, extra_payload in extras:
+            self._emit(extra_event, extra_payload)
+        self._emit("done", done_data)
+        self._set_state("speaking" if audio_duration_from_payload(done_data) > 0 else "cooldown")
+        if barrier is not None:
+            barrier.wait(timeout=self.config.service_timeout_seconds)
+        self._touch_awake_activity()
+        self._emit("playback_done", {"ok": True, "session_id": self.session_id})
+        self._cooldown_then_listen()
 
     def _process_live_session(self, live_session_id: str) -> None:
         self._set_state("transcribing")
@@ -299,6 +514,14 @@ class AutoVoiceSession:
             raise RuntimeError("voice/live/start did not return a session_id")
         return session_id
 
+    def _finish_transcript_only(self, live_session_id: str) -> dict[str, Any]:
+        response = requests.post(
+            urljoin(self.service_url, "/voice/live/finish-transcript"),
+            json={"session_id": live_session_id},
+            timeout=(10, self.config.service_timeout_seconds),
+        )
+        return json_or_error(response)
+
     def _send_audio_to_live_session(
         self,
         live_session_id: str,
@@ -357,6 +580,7 @@ class AutoVoiceSession:
                 "utterance_id": self.active_utterance_id,
                 "transcript": transcript,
                 "is_final": bool(data.get("is_final", False)),
+                "gate_state": self.gate_state,
             },
         )
 
@@ -382,6 +606,64 @@ class AutoVoiceSession:
         self._drain_local_input_queue()
         self.segmenter.reset()
         self._set_state("listening")
+
+    def _check_wake_idle_timeout(self) -> None:
+        if not self.config.wake_gate.enabled:
+            return
+        if self.gate_state != "awake":
+            return
+        if self.state != "listening" or self.active_live_session_id is not None:
+            return
+        timeout_seconds = float(self.config.wake_gate.idle_timeout_seconds)
+        if timeout_seconds <= 0:
+            return
+        if time.monotonic() - self.last_awake_activity < timeout_seconds:
+            return
+        self._set_gate_state("waiting_wake", reason="idle_timeout")
+        self.segmenter.reset()
+        self._emit(
+            "wake_timeout",
+            {
+                "session_id": self.session_id,
+                "timeout_seconds": timeout_seconds,
+                "reply": self.config.wake_gate.sleep_reply,
+            },
+        )
+
+    def _touch_awake_activity(self) -> None:
+        self.last_awake_activity = time.monotonic()
+
+    def _set_gate_state(
+        self,
+        gate_state: AutoVoiceGateState,
+        *,
+        reason: str = "",
+        transcript: str = "",
+    ) -> None:
+        with self.lock:
+            self.gate_state = gate_state
+        self._emit(
+            "gate_state",
+            {
+                "session_id": self.session_id,
+                "gate_state": gate_state,
+                "enabled": self.config.wake_gate.enabled,
+                "reason": reason,
+                "transcript": transcript,
+            },
+        )
+
+    def _matches_wake_phrase(self, transcript: str) -> bool:
+        return _contains_configured_phrase(
+            transcript,
+            self.config.wake_gate.wake_phrases,
+        )
+
+    def _matches_exit_phrase(self, transcript: str) -> bool:
+        return _contains_configured_phrase(
+            transcript,
+            self.config.wake_gate.exit_phrases,
+        )
 
     def _drop_local_input_chunk(self, reason: str) -> None:
         self.dropped_input_chunks += 1
@@ -442,3 +724,29 @@ class AutoVoiceSession:
         self.events.put((event, payload))
 
 
+def _reply_text_from_keys(data: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _contains_configured_phrase(transcript: str, phrases: tuple[str, ...]) -> bool:
+    normalized_transcript = _normalize_phrase(transcript)
+    if not normalized_transcript:
+        return False
+    return any(
+        normalized_phrase in normalized_transcript
+        for phrase in phrases
+        if (normalized_phrase := _normalize_phrase(phrase))
+    )
+
+
+def _normalize_phrase(text: str) -> str:
+    folded = unicodedata.normalize("NFKC", text).casefold()
+    return "".join(
+        char
+        for char in folded
+        if unicodedata.category(char)[0] not in {"P", "Z"}
+    )

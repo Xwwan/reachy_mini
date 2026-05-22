@@ -7,6 +7,18 @@ auto_voice:
   robot_poll_seconds: 0.01
   transcript_poll_seconds: 0.3
   service_timeout_seconds: 120
+  wake_gate:
+    enabled: true
+    wake_phrases:
+      - 燕聆 燕聆
+      - 燕聆
+      - 你好
+    exit_phrases:
+      - 退出
+      - 休息吧
+    idle_timeout_seconds: 60
+    wake_reply: 我在。
+    sleep_reply: 好，我先休息。
   vad:
     speech_threshold: 0.5
     rms_speech_threshold: 0.01

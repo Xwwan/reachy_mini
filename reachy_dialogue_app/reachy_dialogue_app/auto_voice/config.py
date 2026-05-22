@@ -6,7 +6,7 @@ from typing import Any
 
 from ..core.constants import DEFAULT_VAD_MODEL_FILE
 from ..vad import VadConfig
-from .types import AutoVoiceConfig
+from .types import AutoVoiceConfig, WakeGateConfig
 
 
 def _auto_voice_model_path(behavior_config: dict[str, Any] | None = None) -> Path:
@@ -88,6 +88,7 @@ def _auto_voice_config(behavior_config: dict[str, Any] | None = None) -> AutoVoi
             "REACHY_DIALOGUE_AUTO_VOICE_SERVICE_TIMEOUT_SECONDS",
             120,
         ),
+        wake_gate=_wake_gate_config(auto_voice),
     )
 
 
@@ -96,6 +97,25 @@ def _auto_voice_section(behavior_config: dict[str, Any] | None) -> dict[str, Any
         return {}
     auto_voice = behavior_config.get("auto_voice")
     return auto_voice if isinstance(auto_voice, dict) else {}
+
+
+def _wake_gate_config(auto_voice: dict[str, Any]) -> WakeGateConfig:
+    wake_gate = auto_voice.get("wake_gate")
+    if not isinstance(wake_gate, dict):
+        return WakeGateConfig()
+    return WakeGateConfig(
+        enabled=_bool_setting(wake_gate, "enabled", False),
+        wake_phrases=_string_tuple_setting(wake_gate, "wake_phrases"),
+        exit_phrases=_string_tuple_setting(wake_gate, "exit_phrases"),
+        idle_timeout_seconds=_float_setting(
+            wake_gate,
+            "idle_timeout_seconds",
+            "REACHY_DIALOGUE_WAKE_IDLE_TIMEOUT_SECONDS",
+            60.0,
+        ),
+        wake_reply=_string_setting(wake_gate, "wake_reply", "我在。"),
+        sleep_reply=_string_setting(wake_gate, "sleep_reply", "好，我先休息。"),
+    )
 
 
 def _int_setting(
@@ -122,3 +142,31 @@ def _float_setting(
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _bool_setting(config: dict[str, Any], key: str, default: bool) -> bool:
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _string_setting(config: dict[str, Any], key: str, default: str) -> str:
+    value = config.get(key, default)
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
+
+
+def _string_tuple_setting(config: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = config.get(key)
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = value
+    else:
+        items = []
+    return tuple(str(item).strip() for item in items if str(item).strip())
