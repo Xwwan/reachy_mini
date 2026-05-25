@@ -1,64 +1,323 @@
-# Reachy Dialogue App Plan
+# Reachy Dialogue App New Backend Integration Plan
+
+## 当前分支
+
+`feature/reachy-dialogue-interaction-api`
 
 ## 我对需求的理解
 
-你已经在 `/home/tzhx/test-project` 写好了一个本地长期记忆对话系统，希望在 Reachy Mini 项目下使用它，并且 Python 运行环境使用 conda 环境 `test`。
+你已经大幅修改了对话后端，新的后端契约记录在：
 
-当前我建议把它接成一个 Reachy Mini Python app：Reachy app 负责连接机器人、提供简单控制/对话入口、触发机器人动作；你的对话系统继续作为独立本地 HTTP 服务运行。这样可以避免两个项目都使用顶层包名 `src` 时出现 import 冲突，也便于单独测试对话系统。
+`/Users/xwan/code/test-project/docs/api_contracts.md`
+
+这次 `reachy_dialogue_app` 不再继续兼容旧前端和旧业务接口。目标是把它改造成一个面向新统一 Interaction API 的原生 Reachy Mini 客户端：
+
+- 可以完全抛弃现有 `static/` 前端实现。
+- 不需要 fallback 到旧接口。
+- 主链路只接入新的 `/interaction/*` API。
+- 本地 Reachy app 仍负责机器人麦克风采集、机器人扬声器播放、行为标签触发、音量控制和本地调试。
+- 新后端负责统一 session、run、workflow、文字/语音 interaction、onboarding 状态和播放状态记录。
+
+## 新后端主契约
+
+本轮接入以这些接口为核心：
+
+- `POST /interaction/sessions`
+- `GET /interaction/sessions/{interaction_session_id}`
+- `GET /interaction/sessions/{interaction_session_id}/runs`
+- `GET /interaction/runs/{run_id}`
+- `POST /interaction/runs/text-stream`
+- `POST /interaction/live/start`
+- `POST /interaction/live/chunk`
+- `GET /interaction/live/transcript`
+- `POST /interaction/live/finish-stream`
+- `POST /interaction/live/abort`
+- `POST /interaction/playback/done`
+- `POST /interaction/playback/error`
+
+旧接口不再作为主路径，也不做 fallback：
+
+- 不再 fallback 到 `/chat`。
+- 不再 fallback 到 `/chat/stream`。
+- 不再 fallback 到 `/voice/chat`。
+- 不再 fallback 到 `/voice/live/*`。
+- 不再 fallback 到 `/tools/voice-latency/finish-stream`。
+
+`/followups/*` 和 `/memory/*` 是否继续保留为辅助功能，需要根据新后端实际产品目标确认；它们不会作为 initial chat/voice 主链路的基础。
 
 ## 技术方案
 
-1. 使用 `reachy-mini-app-assistant` 创建的本地 app 骨架：`reachy_dialogue_app/`。
-2. 保留 `/home/tzhx/test-project` 作为独立服务，由下面命令启动：
-   ```bash
-   /home/tzhx/miniconda3/bin/conda run -n test python -m src.main --host 127.0.0.1 --port 8000 --log-level DEBUG
-   ```
-3. 在 Reachy app 中增加一个轻量 HTTP client，调用：
-   - `GET /healthz` 检查对话服务是否在线
-   - `POST /chat` 发送文本并拿到 `reply`
-   - 可选：`POST /voice/chat` 接入语音输入/输出
-4. 在 Reachy app 的 `static/` 页面中提供一个手机友好的聊天界面。
-5. Reachy app 收到回复后可执行基础表现动作，例如点头、轻微转头、天线摆动；是否朗读回复取决于你希望使用文本对话还是语音对话。
+### 1. 新增 Interaction Client 层
+
+新增一个集中封装新后端的模块，避免在 `main.py` 和音频模块里散落 URL 拼接和 SSE 解析。
+
+建议结构：
+
+- `reachy_dialogue_app/interaction/__init__.py`
+- `reachy_dialogue_app/interaction/client.py`
+- `reachy_dialogue_app/interaction/types.py`
+- `reachy_dialogue_app/interaction/sse.py`
+
+这个 client 负责：
+
+- 统一 normalize service URL。
+- 创建 interaction session。
+- 查询 session 和 runs。
+- 发起 text stream。
+- 管理 live start/chunk/transcript/finish/abort。
+- 发送 playback done/error。
+- 解析统一错误格式：`{"error": {"message": "..."}}`。
+- 解析并透传 SSE 事件。
+
+### 2. 重写本地 FastAPI 代理层
+
+保留 Reachy app 的本地 FastAPI 服务，但把现有 `/api/text-chat-stream`、`/api/robot-mic/*`、`/api/auto-voice/*` 等旧语义接口逐步替换或重接到 Interaction API。
+
+建议新的本地 API：
+
+- `POST /api/interaction/session`
+- `GET /api/interaction/session`
+- `GET /api/interaction/runs`
+- `GET /api/interaction/runs/{run_id}`
+- `POST /api/interaction/text-stream`
+- `POST /api/interaction/live/start`
+- `POST /api/interaction/live/chunk`
+- `GET /api/interaction/live/transcript`
+- `POST /api/interaction/live/finish-stream`
+- `POST /api/interaction/live/abort`
+
+机器人麦克风可以保留更贴近设备的本地入口，但内部必须走新后端：
+
+- `POST /api/robot-mic/start-interaction`
+- `POST /api/robot-mic/finish-interaction-stream`
+- `GET /api/robot-mic/level`
+- `GET /api/robot-mic/debug`
+
+### 3. 重写播放调度与后端播放状态闭环
+
+新后端的 `audio` 事件会带：
+
+- `playback_key`
+- `run_id`
+- `interaction_session_id`
+- `workflow`
+
+机器人播放队列必须优先使用后端给出的 `playback_key`，而不是只靠 `request_id + turn_id` 推导。
+
+播放组需要保存：
+
+- `playback_key`
+- `run_id`
+- `interaction_session_id`
+- `workflow`
+- `audio chunks`
+- `done_event`
+- `action_signal`
+- `action_config`
+
+播放完成后：
+
+- 成功：调用 `POST /interaction/playback/done`
+- 失败：调用 `POST /interaction/playback/error`
+
+本地前端仍可收到 `playback_done` 或 `playback_error` SSE，用于 UI 展示；但真实状态以新后端 run 的 `playback_status` 为准。
+
+### 4. 文本交互主路径
+
+文本输入流程改为：
+
+1. 前端选择或创建 interaction session。
+2. 本地 app 调用 `POST /interaction/runs/text-stream`。
+3. 本地 app 透传这些 SSE：
+   - `meta`
+   - `delta`
+   - `audio`
+   - `state_delta`
+   - `done`
+   - `error`
+4. `audio` 事件同时进入机器人播放调度。
+5. `done` 到达后，当前播放组标记 completed。
+6. 播放实际结束后，回调新后端 playback done/error。
+
+`workflow=chat` 时，`done` 可能带 `request_id` 和 `retrieval_status=pending`。
+
+`workflow=onboarding` 时，`done` 可能带：
+
+- `onboarding_session_id`
+- `stage`
+- `stage_name`
+- `collected`
+- `missing_required_slots`
+- `onboarding_complete`
+
+### 5. 机器人麦克风语音交互
+
+机器人麦克风流程改为：
+
+1. 创建或复用 interaction session。
+2. `POST /interaction/live/start`，得到 `live_session_id`。
+3. 后端持续读取 Reachy 麦克风，按 16kHz、16-bit、mono PCM 分块。
+4. 每个 chunk 发到 `POST /interaction/live/chunk`。
+5. UI 轮询或订阅本地接口，本地接口查询 `GET /interaction/live/transcript`。
+6. 停止录音时调用 `POST /interaction/live/finish-stream`。
+7. 透传 `transcript/meta/delta/audio/state_delta/done/error`。
+8. `audio` 进入机器人播放调度。
+9. 播放完成后回调 playback done/error。
+
+### 6. 本地麦克风与自动语音
+
+本地麦克风和自动语音也应使用同一套 Interaction API。
+
+本地麦克风：
+
+- 浏览器采集音频。
+- 本地 app 代理到 `/interaction/live/*`。
+- 不再走旧 `/voice/live/*`。
+
+自动语音：
+
+- 仍可保留本地 Silero VAD。
+- VAD 只负责分句和半双工状态机。
+- 每次真实用户 utterance 使用 `/interaction/live/start`、`/interaction/live/chunk`、`/interaction/live/finish-stream`。
+- 助手 speaking/playback 期间暂停新 utterance。
+- 播放完成后恢复 listening。
+
+唤醒门禁建议：
+
+- 唤醒词本地处理，不创建 interaction run。
+- 已唤醒后的真实用户问题才进入 Interaction API。
+- 这样不会把唤醒词污染到 chat/onboarding 历史里。
+
+### 7. 全新前端
+
+现有前端可以完全废弃。新前端建议从零组织为一个简洁的 interaction 工作台：
+
+- 顶部设置区：
+  - service URL
+  - workflow：`chat` / `onboarding`
+  - conversation id
+  - interaction session id
+  - session 状态
+
+- 主对话区：
+  - user transcript
+  - assistant streaming delta
+  - final done payload
+  - onboarding state delta
+
+- 输入区：
+  - 文本输入
+  - 本地麦克风
+  - 机器人麦克风
+  - 自动语音开关
+
+- 运行状态区：
+  - current run id
+  - current playback key
+  - playback status
+  - live session id
+  - latest transcript
+
+- 调试区：
+  - raw SSE events
+  - recent runs
+  - backend errors
+  - playback done/error callback result
+
+前端播放调度如果保留浏览器本地播放，也必须使用同样规则：
+
+1. 优先使用 `playback_key`。
+2. 其次才使用 `request_id + turn_id` 或 `run_id`。
+3. 不用 `chunk_index` 做全局排序。
+4. 同一播放组内按 `segment_index/chunk_index/arrival_index` 排序。
+
+### 8. 行为标签与机器人动作
+
+保留现有行为标签机制：
+
+- `[emo:...]`
+- `[act:...]`
+
+触发时机建议仍在本地 app 处理：
+
+- `done.reply` 到达后解析行为标签。
+- 对 `audio` 播放和动作触发做顺序协调。
+- 动作失败不应阻断 playback done/error 回调，但需要记录到本地 SSE/debug。
+
+### 9. 测试策略
+
+新增或重写测试，重点覆盖新契约：
+
+- interaction session 创建。
+- text stream 透传 `meta/delta/audio/state_delta/done`。
+- audio 使用 `playback_key` 入队。
+- `run_id + playback_key` 被保存到播放组。
+- 播放成功后调用 `/interaction/playback/done`。
+- 播放失败后调用 `/interaction/playback/error`。
+- live start/chunk/transcript/finish-stream 全链路。
+- `workflow=chat` 时保留 `request_id/retrieval_status`。
+- `workflow=onboarding` 时正确透传 onboarding 状态，不强依赖 `request_id`。
+- 前端 mock 测试覆盖 `playback_key` 优先级和 `state_delta` 渲染。
+
+运行测试默认使用项目约定的 conda 环境：
+
+```bash
+conda run -n toy python -m pytest tests/unit_tests/test_reachy_dialogue_streams.py
+```
+
+必要时再扩展到相关测试集。
+
+## 实施顺序
+
+1. 写好本计划并确认问题。
+2. 新增 Interaction Client 层。
+3. 重写播放调度 metadata 和 playback done/error 回调。
+4. 重接文本 interaction stream。
+5. 重接机器人麦克风 live interaction。
+6. 重接本地麦克风 live interaction。
+7. 重接自动语音。
+8. 从零替换前端静态文件。
+9. 更新 README。
+10. 重写/新增测试。
+11. 运行核心测试并修正问题。
+
+## 暂不做的事
+
+- 不保留旧前端结构。
+- 不做旧 `/chat`、`/voice/live`、`/voice/chat` 的 fallback。
+- 不自动启动 `/Users/xwan/code/test-project` 后端服务。
+- 不提交任何 API key、token、数据库或私有数据。
+- 不发布 Hugging Face Space。
 
 ## 待确认问题
 
 请在下面填写答案，或直接在聊天里回复：
 
-1. 机器人类型：
-   - 答案：reachy mini
+1. 默认 workflow 是 `chat` 还是 `onboarding`？
+   - 答案：
 
-2. 你想先做哪种交互？
-   - A. 文本聊天：网页输入文字，机器人做动作，可先不说话
-   - B. 语音聊天：使用 `/voice/chat`，机器人需要播放 TTS 音频
-   - 答案：语音聊天
+2. 是否需要在第一版 UI 中完整支持 onboarding 阶段展示和字段收集，还是只先透传 `state_delta` 和 `done` 中的 onboarding 状态？
+   - 答案：
 
-3. 对话服务是否由你手动单独启动，还是希望 Reachy app 自动启动 `/home/tzhx/test-project` 服务？
-   - 答案：先是我手动启动
+3. 是否保留 follow-up 面板和 `/followups/*` 辅助功能？
+   - 答案：
 
-4. 默认服务地址是否固定为 `http://127.0.0.1:8000`？
-   - 答案：自定义地址（默认12312），可修改
+4. 是否保留 memory curate/profile refresh 调试按钮？
+   - 答案：
 
-5. 每轮回复后希望机器人做什么动作？
-   - 示例：点头、摇头、看向用户、天线摆动、随机情绪动作
-   - 答案：摇头（可修改）
+5. 自动语音的唤醒门禁是否继续保留？
+   - 答案：
 
-## 暂不做的事
+6. 机器人播放完成后，是否必须等待 `/interaction/playback/done` 成功返回，才向前端发送本地 `playback_done`？
+   - 答案：
 
-- 暂不把 `/home/tzhx/test-project` 复制进 Reachy app，避免重复维护。
-- 暂不发布到 Hugging Face，先在本机跑通。
-- 暂不提交 `.env`、数据库或任何 API key。
+7. 新前端是否需要继续支持 web-only 模式，也就是没有真实 Reachy 时使用浏览器本地麦克风和本地音频播放调试？
+   - 答案：
 
-## 实现记录
+8. 默认服务地址是否改成新后端实际地址？
+   - 当前旧默认：`http://127.0.0.1:12312`
+   - 答案：
 
-- 已实现语音聊天桥接页面，默认对话服务地址为 `http://127.0.0.1:12312`。
-- 已实现 `/api/voice-chat` 转发到外部对话系统 `/voice/chat`。
-- 已实现 TTS PCM 转临时 WAV，并通过 Reachy Mini 媒体接口播放。
-- 已移除 dialogue app 的默认摇头/天线动作；动作由 `[act:...]` 等行为标签触发，并复用当前 ReachyMini 连接调用 `action_call` 函数。
-- 临时加入机器人麦克风回放测试：页面可单独录制机器人麦克风音频，停止后不经过对话服务，直接用机器人扬声器播放，用于检查麦克风输入和扬声器输出。
-- 加入 Reachy Emoji 联动：dialogue app 最初维护 `emoji_config.json` 表示可用表情和 `signal_map`；当回复中出现配置 key 时，通过 URL 请求触发表情服务。
-- 本次调整计划：把表情联动升级为通用行为标签联动。配置从 JSON 迁移到 `behavior_config.yaml`，由 YAML 声明模块、可识别 tag 名、触发 key 白名单或 `*`、触发方式。dialogue app 只解析模型回复里的 `[tag:key]`；表情继续通过 URL 触发，动作暂时直接调用 `action_call` 函数且不在 dialogue app 内做映射；前端继续显示原始 tag 文本，只额外展示触发状态。
-- 本次调整计划：增加手动文本输入入口，复用对话服务 `/chat` 和现有行为标签/机器人播放队列；增加扬声器与麦克风音量滑杆，通过 Reachy daemon 的 `/api/volume/*` 接口代理读写音量。
-- 本次调整计划：把现有页面升级为完整的“实时首回复 + 异步记忆补充”对话前端。用户已确认可以做完整改造，不限 MVP；后端接口已具备但当前服务不一定启动；文本和语音回复都进入同一条聊天时间线；保留文本朗读开关并默认开启；切换 `conversation_id` 不清空当前时间线；需要开发者调试面板。
-- 实现方向：新增 `/api/followups/stream` 同源代理，前端建立独立 `EventSource` 监听 follow-up；聊天状态按 `request_id` / message id 绑定，不按“最后一条消息”追加；`/chat/stream` 与机器人麦克风 `stop-stream` 都复用同一套 timeline 渲染；follow-up 作为独立补充/修正消息插入，避免和当前 streaming 回复串线；调试面板展示 follow-up 连接状态、最近 request、原始 payload 和可选记忆维护动作。
-- 本次调整计划：新增统一 Silero VAD 自动对话模式。web-only 电脑麦克风和真实 Reachy 机器人麦克风都使用后端 Silero VAD 做自动分句；模型文件放在 `reachy_dialogue_app/models/`，默认不提交 ONNX 二进制，提供下载脚本和 README。新增 `/api/auto-voice/*`：local 模式由浏览器持续上传 PCM chunk，robot 模式由后端读取机器人麦克风；两者共用自动会话状态机、SSE 事件和现有 timeline 渲染。第一版半双工：助手流式回答/播放期间暂停触发新 utterance，等 `playback_done`/cooldown 后恢复 listening；保留原手动录音、本机麦克风测试和机器人麦克风回放测试。
-- 本次调整计划：在自动对话外层增加唤醒门禁状态机。用户已确认走路径 A，后端新增 `/voice/live/finish-transcript`，用于结束实时语音识别会话并只返回最终识别文本；自动语音 session 在 `wake_gate.enabled` 时先用该接口判断唤醒词/退出词，只有已唤醒且不是退出词的语句才把最终文本送入 `/chat/stream`（fallback `/chat`）生成回复和 TTS。默认体验：唤醒词单独一句唤醒，唤醒后连续对话，退出词或空闲超时回到等待唤醒；配置放在 `behavior_config.yaml` 的 `wake_gate` 段。
+## 备注
+
+本计划描述的是一次破坏性重接。后续实现时可以删除或替换旧前端代码和旧接口代理逻辑，但每一步都应保持测试可运行，并避免改动与 `reachy_dialogue_app` 无关的项目区域。
