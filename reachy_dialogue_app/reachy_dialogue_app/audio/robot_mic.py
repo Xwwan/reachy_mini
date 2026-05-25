@@ -589,7 +589,7 @@ class RobotMicRecorder:
             level=0.0,
         )
         self.thread: threading.Thread | None = None
-        self.live_session: LiveVoiceSession | None = None
+        self.live_session: LiveVoiceSession | InteractionLiveVoiceSession | None = None
         self.live_transcript = LiveTranscript(text="", is_final=False)
         self.final_response: dict[str, Any] | None = None
         self.stop_event = threading.Event()
@@ -674,6 +674,91 @@ class RobotMicRecorder:
                 )
             raise
 
+    def start_interaction(
+        self,
+        *,
+        service_url: str,
+        interaction_session_id: str,
+        workflow: str,
+    ) -> None:
+        with self.lock:
+            if self.is_recording:
+                raise RuntimeError("机器人麦克风已经在录音。")
+            if self.is_processing_reply or self.live_session is not None:
+                raise RuntimeError("上一轮回复还没有完成，请等机器人回复结束后再录音。")
+            sample_rate = self.reachy_mini.media.get_input_audio_samplerate()
+            if sample_rate < 0:
+                raise RuntimeError(
+                    "机器人音频系统未初始化。请使用启用了媒体功能的真实 "
+                    "Reachy daemon 启动 app；--mockup-sim 会使用 --no-media，"
+                    "不能录制机器人麦克风音频。"
+                )
+            self.samples = []
+            self.captured_frames = 0
+            self.empty_sample_count = 0
+            self.sample_rate = sample_rate or INPUT_SAMPLE_RATE
+            self.latest_level = AudioLevel(
+                is_recording=True,
+                duration_seconds=0.0,
+                rms=0.0,
+                peak=0.0,
+                level=0.0,
+            )
+            self.stop_event.clear()
+            self.live_session = None
+            self.live_transcript = LiveTranscript(
+                text="",
+                is_final=False,
+                error=None,
+            )
+            self.final_response = None
+            self.is_recording = True
+            self.started_at = 0.0
+
+        live_session: InteractionLiveVoiceSession | None = None
+        try:
+            live_session = InteractionLiveVoiceSession.start(
+                service_url,
+                interaction_session_id=interaction_session_id,
+                workflow=workflow,
+                sample_rate=self.sample_rate,
+            )
+            with self.lock:
+                self.live_session = live_session
+
+            self.reachy_mini.media.start_recording()
+            first_sample = _wait_for_robot_audio_sample(self.reachy_mini)
+            if first_sample is None:
+                raise RuntimeError(
+                    "机器人麦克风在 "
+                    f"{ROBOT_MIC_READY_TIMEOUT_SECONDS:.0f}s 内没有返回音频。"
+                )
+
+            with self.lock:
+                self.started_at = time.time()
+            self._capture_sample(first_sample)
+            self.thread = threading.Thread(target=self._record_loop, daemon=True)
+            self.thread.start()
+        except Exception:
+            self.reachy_mini.media.stop_recording()
+            if live_session is not None:
+                live_session.abort()
+            with self.lock:
+                if self.live_session is live_session:
+                    self.live_session = None
+                self.samples = []
+                self.is_recording = False
+                self.stop_event.set()
+                self.thread = None
+                self.latest_level = AudioLevel(
+                    is_recording=False,
+                    duration_seconds=0.0,
+                    rms=0.0,
+                    peak=0.0,
+                    level=0.0,
+                )
+            raise
+
     def stop(self, *, conversation_id: str, tts_enabled: bool) -> RecordedAudio:
         recording = self._stop_recording()
         if self.live_session is not None:
@@ -694,12 +779,25 @@ class RobotMicRecorder:
     def stop_for_stream(self) -> tuple[RecordedAudio, LiveVoiceSession]:
         recording = self._stop_recording()
         with self.lock:
-            if self.live_session is None:
+            if not isinstance(self.live_session, LiveVoiceSession):
                 raise RuntimeError("实时语音会话不存在。")
             self.is_processing_reply = True
             return recording, self.live_session
 
-    def finish_reply_processing(self, session: LiveVoiceSession) -> None:
+    def stop_interaction_for_stream(
+        self,
+    ) -> tuple[RecordedAudio, InteractionLiveVoiceSession]:
+        recording = self._stop_recording()
+        with self.lock:
+            if not isinstance(self.live_session, InteractionLiveVoiceSession):
+                raise RuntimeError("Interaction 实时语音会话不存在。")
+            self.is_processing_reply = True
+            return recording, self.live_session
+
+    def finish_reply_processing(
+        self,
+        session: LiveVoiceSession | InteractionLiveVoiceSession,
+    ) -> None:
         with self.lock:
             if self.live_session is session:
                 self.live_session = None

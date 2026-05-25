@@ -132,6 +132,15 @@ class LocalMicAbortPayload(BaseModel):
     session_id: str
 
 
+class RobotMicInteractionStartPayload(BaseModel):
+    interaction_session_id: str
+    workflow: str = "chat"
+
+
+class RobotMicInteractionFinishStreamPayload(BaseModel):
+    tts_enabled: bool = True
+
+
 class AutoVoiceStartPayload(BaseModel):
     input_mode: str
     conversation_id: str | None = None
@@ -525,6 +534,170 @@ class ReachyDialogueApp(ReachyMiniApp):
                             yield _sse_frame("playback_done", {"ok": True})
                             continue
                         yield _sse_frame(event, data)
+                except Exception as exc:
+                    if not playback_completed:
+                        playback_scheduler.abort(playback_key or fallback_playback_key)
+                    yield _sse_frame(
+                        "error",
+                        {"message": str(exc) or exc.__class__.__name__},
+                    )
+                finally:
+                    if not playback_completed:
+                        playback_scheduler.abort(playback_key or fallback_playback_key)
+                    recorder.finish_reply_processing(session)
+
+            return StreamingResponse(
+                event_stream(),
+                media_type="text/event-stream; charset=utf-8",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        @self.settings_app.post("/api/robot-mic/start-interaction")
+        def start_robot_mic_interaction(
+            payload: RobotMicInteractionStartPayload,
+        ) -> dict[str, Any]:
+            current = _snapshot(settings, settings_lock)
+            if playback_tester.get_level().is_recording:
+                raise HTTPException(
+                    status_code=409,
+                    detail="机器人麦克风回放测试正在录音，请先停止测试。",
+                )
+            interaction_session_id = payload.interaction_session_id.strip()
+            if not interaction_session_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="interaction_session_id is required.",
+                )
+            try:
+                recorder.start_interaction(
+                    service_url=current["service_url"],
+                    interaction_session_id=interaction_session_id,
+                    workflow=_validate_workflow(payload.workflow),
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            return {
+                "ok": True,
+                "interaction_session_id": interaction_session_id,
+                "workflow": _validate_workflow(payload.workflow),
+                "sample_rate": reachy_mini.media.get_input_audio_samplerate(),
+                "channels": reachy_mini.media.get_input_channels(),
+            }
+
+        @self.settings_app.post("/api/robot-mic/finish-interaction-stream")
+        def finish_robot_mic_interaction_stream(
+            payload: RobotMicInteractionFinishStreamPayload,
+        ) -> StreamingResponse:
+            current = _snapshot(settings, settings_lock)
+            try:
+                recording, session = recorder.stop_interaction_for_stream()
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+            def event_stream():
+                audio_sample_rate = int(current["tts_sample_rate"])
+                fallback_playback_key = _new_playback_key("robot-mic-interaction")
+                playback_key: str | None = None
+                playback_completed = False
+                try:
+                    yield _sse_frame(
+                        "recording",
+                        {
+                            "audio_format": "pcm",
+                            "sample_rate": recording.sample_rate,
+                            "channels": recording.channels,
+                            "duration_seconds": recording.duration_seconds,
+                            "rms": recording.rms,
+                            "peak": recording.peak,
+                            "byte_count": recording.byte_count,
+                        },
+                    )
+                    yield _sse_frame("debug", recorder.debug_snapshot())
+                    for item in session.finish_stream(tts_enabled=payload.tts_enabled):
+                        event = str(item.get("event") or "message")
+                        data = item.get("data") or {}
+                        if event == "audio":
+                            audio_base64 = data.get("audio_base64")
+                            audio_sample_rate = int(
+                                data.get("sample_rate")
+                                or data.get("audio_sample_rate")
+                                or audio_sample_rate
+                            )
+                            if isinstance(audio_base64, str) and audio_base64:
+                                metadata = _playback_metadata_from_payload(
+                                    data,
+                                    playback_key or fallback_playback_key,
+                                )
+                                playback_key = playback_scheduler.enqueue_audio(
+                                    metadata.playback_key,
+                                    audio_base64=audio_base64,
+                                    sample_rate=audio_sample_rate,
+                                    chunk_index=_optional_int(
+                                        data.get("chunk_index")
+                                    ),
+                                    segment_index=_optional_int(
+                                        data.get("segment_index")
+                                    ),
+                                    playback_metadata=metadata,
+                                )
+                            yield _sse_frame(event, data)
+                            continue
+
+                        if event == "done":
+                            recorder.final_response = dict(data)
+                            recorder.live_transcript = LiveTranscript(
+                                text=str(data.get("transcript") or ""),
+                                is_final=True,
+                                error=None,
+                            )
+                            behavior_results = _trigger_behaviors_from_text(
+                                str(data.get("reply") or ""),
+                                behavior_config,
+                            )
+                            for result in behavior_results:
+                                yield _sse_frame(
+                                    "behavior",
+                                    _behavior_result_payload(result),
+                                )
+                            playback_done: threading.Event | None = None
+                            if playback_key:
+                                metadata = _playback_metadata_from_payload(
+                                    data,
+                                    playback_key,
+                                )
+                                playback_done = threading.Event()
+                                playback_scheduler.complete(
+                                    playback_key,
+                                    action_signal=_first_ok_module_key(
+                                        behavior_results,
+                                        "action",
+                                    ),
+                                    action_config=_module_config(
+                                        behavior_config,
+                                        "action",
+                                    ),
+                                    done_event=playback_done,
+                                    playback_metadata=metadata,
+                                )
+                                playback_completed = True
+                            yield _sse_frame(event, data)
+                            if playback_done is not None:
+                                playback_done.wait(timeout=120)
+                                yield _sse_frame(
+                                    "playback_done",
+                                    {"ok": True, "playback_key": playback_key},
+                                )
+                            continue
+
+                        yield _sse_frame(event, data)
+                        if event == "error":
+                            playback_scheduler.abort(
+                                playback_key or fallback_playback_key
+                            )
+                            return
                 except Exception as exc:
                     if not playback_completed:
                         playback_scheduler.abort(playback_key or fallback_playback_key)
