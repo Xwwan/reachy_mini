@@ -24,6 +24,7 @@ from .audio.playback import (
     _new_playback_key,
     _optional_int,
     _playback_key_from_payload,
+    _playback_metadata_from_payload,
 )
 from .audio.robot_mic import LiveTranscript, RobotMicPlaybackTester, RobotMicRecorder
 from .audio.robot_output import (
@@ -71,7 +72,7 @@ from .dialogue.text_tts import (
     _iter_text_tts_audio_payloads,
     _payload_has_audio,
 )
-from .interaction import InteractionApiClient
+from .interaction import InteractionApiClient, InteractionApiError
 
 
 class SettingsPayload(BaseModel):
@@ -90,6 +91,20 @@ class VoiceChatPayload(BaseModel):
 class TextChatPayload(BaseModel):
     text: str
     conversation_id: str | None = None
+    tts_enabled: bool = True
+
+
+class InteractionSessionPayload(BaseModel):
+    workflow: str = "chat"
+    conversation_id: str | None = None
+    input_mode: str = "text"
+    tts_enabled: bool = True
+
+
+class InteractionTextStreamPayload(BaseModel):
+    interaction_session_id: str
+    workflow: str = "chat"
+    message: str
     tts_enabled: bool = True
 
 
@@ -227,6 +242,14 @@ class ReachyDialogueApp(ReachyMiniApp):
                     "error": str(exc),
                     "service_url": current["service_url"],
                 }
+
+        _register_interaction_routes(
+            self.settings_app,
+            settings,
+            settings_lock,
+            behavior_config=behavior_config,
+            playback_scheduler=playback_scheduler,
+        )
 
         @self.settings_app.get("/api/app-mode")
         def app_mode() -> dict[str, Any]:
@@ -669,6 +692,33 @@ def _process_robot_job(
             job.done_event.set()
 
 
+def _validate_workflow(value: str) -> str:
+    workflow = value.strip()
+    if workflow not in {"chat", "onboarding"}:
+        raise HTTPException(
+            status_code=422,
+            detail="workflow must be 'chat' or 'onboarding'.",
+        )
+    return workflow
+
+
+def _validate_input_mode(value: str) -> str:
+    input_mode = value.strip()
+    if input_mode not in {"text", "local", "robot", "auto"}:
+        raise HTTPException(
+            status_code=422,
+            detail="input_mode must be 'text', 'local', 'robot', or 'auto'.",
+        )
+    return input_mode
+
+
+def _interaction_http_exception(exc: InteractionApiError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status_code or 502,
+        detail=exc.message,
+    )
+
+
 def _default_settings() -> dict[str, Any]:
     return {
         "service_url": os.environ.get("REACHY_DIALOGUE_SERVICE_URL", DEFAULT_SERVICE_URL),
@@ -721,6 +771,176 @@ def _register_settings_routes(
                 "error": str(exc),
                 "service_url": current["service_url"],
             }
+
+
+def _register_interaction_routes(
+    app: FastAPI,
+    settings: dict[str, Any],
+    settings_lock: threading.Lock,
+    *,
+    behavior_config: dict[str, Any],
+    playback_scheduler: RobotAudioPlaybackScheduler | None = None,
+    client_factory: Callable[[str], InteractionApiClient] = InteractionApiClient,
+) -> None:
+    @app.post("/api/interaction/session")
+    def create_interaction_session(
+        payload: InteractionSessionPayload,
+    ) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        conversation_id = (
+            payload.conversation_id
+            or current["conversation_id"]
+            or DEFAULT_CONVERSATION_ID
+        ).strip()
+        if not conversation_id:
+            conversation_id = DEFAULT_CONVERSATION_ID
+        try:
+            return client_factory(current["service_url"]).create_session(
+                workflow=_validate_workflow(payload.workflow),
+                conversation_id=conversation_id,
+                input_mode=_validate_input_mode(payload.input_mode),
+                tts_enabled=payload.tts_enabled,
+            )
+        except InteractionApiError as exc:
+            raise _interaction_http_exception(exc) from exc
+
+    @app.post("/api/interaction/text-stream")
+    def interaction_text_stream(
+        payload: InteractionTextStreamPayload,
+    ) -> StreamingResponse:
+        current = _snapshot(settings, settings_lock)
+        workflow = _validate_workflow(payload.workflow)
+        message = payload.message.strip()
+        if not message:
+            raise HTTPException(status_code=422, detail="文本不能为空。")
+        interaction_session_id = payload.interaction_session_id.strip()
+        if not interaction_session_id:
+            raise HTTPException(
+                status_code=422,
+                detail="interaction_session_id is required.",
+            )
+
+        def event_stream():
+            playback_key: str | None = None
+            playback_completed = False
+            fallback_playback_key = _new_playback_key("interaction-text")
+            try:
+                client = client_factory(current["service_url"])
+                for item in client.text_stream(
+                    interaction_session_id=interaction_session_id,
+                    workflow=workflow,
+                    message=message,
+                    tts_enabled=payload.tts_enabled,
+                ):
+                    event = item.event
+                    data = item.data
+                    if event == "audio":
+                        audio_base64 = data.get("audio_base64")
+                        if (
+                            playback_scheduler is not None
+                            and isinstance(audio_base64, str)
+                            and audio_base64
+                        ):
+                            metadata = _playback_metadata_from_payload(
+                                data,
+                                playback_key or fallback_playback_key,
+                            )
+                            playback_key = playback_scheduler.enqueue_audio(
+                                metadata.playback_key,
+                                audio_base64=audio_base64,
+                                sample_rate=int(
+                                    data.get("sample_rate")
+                                    or data.get("audio_sample_rate")
+                                    or current["tts_sample_rate"]
+                                ),
+                                chunk_index=_optional_int(data.get("chunk_index")),
+                                segment_index=_optional_int(
+                                    data.get("segment_index")
+                                ),
+                                playback_metadata=metadata,
+                            )
+                        yield _sse_frame(event, data)
+                        continue
+
+                    if event == "done":
+                        reply = _reply_text_from_payload(data)
+                        behavior_results = _trigger_behaviors_from_text(
+                            reply,
+                            behavior_config,
+                        )
+                        for result in behavior_results:
+                            yield _sse_frame(
+                                "behavior",
+                                _behavior_result_payload(result),
+                            )
+                        playback_done: threading.Event | None = None
+                        if playback_scheduler is not None and playback_key:
+                            metadata = _playback_metadata_from_payload(
+                                data,
+                                playback_key,
+                            )
+                            playback_done = threading.Event()
+                            playback_scheduler.complete(
+                                playback_key,
+                                action_signal=_first_ok_module_key(
+                                    behavior_results,
+                                    "action",
+                                ),
+                                action_config=_module_config(
+                                    behavior_config,
+                                    "action",
+                                ),
+                                done_event=playback_done,
+                                playback_metadata=metadata,
+                            )
+                            playback_completed = True
+                        yield _sse_frame(event, data)
+                        if playback_done is not None:
+                            playback_done.wait(timeout=120)
+                            yield _sse_frame(
+                                "playback_done",
+                                {"ok": True, "playback_key": playback_key},
+                            )
+                        elif playback_scheduler is None:
+                            yield _sse_frame(
+                                "playback_done",
+                                {"ok": True, "skipped": True},
+                            )
+                        return
+
+                    yield _sse_frame(event, data)
+                    if event == "error":
+                        if playback_scheduler is not None:
+                            playback_scheduler.abort(
+                                playback_key or fallback_playback_key
+                            )
+                        return
+            except InteractionApiError as exc:
+                if not playback_completed and playback_scheduler is not None:
+                    playback_scheduler.abort(playback_key or fallback_playback_key)
+                yield _sse_frame(
+                    "error",
+                    {
+                        "message": exc.message,
+                        "status_code": exc.status_code,
+                    },
+                )
+            except Exception as exc:
+                if not playback_completed and playback_scheduler is not None:
+                    playback_scheduler.abort(playback_key or fallback_playback_key)
+                yield _sse_frame(
+                    "error",
+                    {"message": str(exc) or exc.__class__.__name__},
+                )
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
 
 def _register_text_chat_routes(
@@ -1483,6 +1703,12 @@ def _build_web_only_app() -> FastAPI:
         return FileResponse(static_dir / "index.html")
 
     _register_settings_routes(app, settings, settings_lock)
+    _register_interaction_routes(
+        app,
+        settings,
+        settings_lock,
+        behavior_config=behavior_config,
+    )
     _register_text_chat_routes(
         app,
         settings,
