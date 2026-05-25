@@ -213,6 +213,14 @@ textarea {
     border-bottom: 1px solid var(--line);
 }
 
+.subheading {
+    margin: 12px 12px 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px;
+    background: #f8fafc;
+}
+
 .status-pill {
     border: 1px solid #99f6e4;
     border-radius: 999px;

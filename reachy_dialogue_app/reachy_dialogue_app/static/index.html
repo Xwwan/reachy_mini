@@ -82,6 +82,16 @@
                         <button id="abort-live-btn" class="secondary-action" type="button" disabled>取消</button>
                     </div>
                     <p id="live-transcript" class="caption-line">等待语音输入</p>
+                    <div class="panel-heading subheading">
+                        <span>自动语音</span>
+                        <strong id="auto-voice-state">idle</strong>
+                    </div>
+                    <div class="segmented">
+                        <button id="auto-local-btn" class="secondary-action" type="button">自动本机</button>
+                        <button id="auto-robot-btn" class="secondary-action" type="button">自动机器人</button>
+                    </div>
+                    <button id="auto-stop-btn" class="secondary-action" type="button" disabled>停止自动语音</button>
+                    <p id="auto-voice-status" class="caption-line">等待启动</p>
                 </section>
 
                 <section class="tool-panel" aria-label="Run 状态">

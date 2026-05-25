@@ -7,6 +7,7 @@ from ..audio.playback import (
     RobotAudioPlaybackScheduler,
     _new_playback_key,
     _optional_int,
+    _playback_metadata_from_payload,
 )
 from ..behavior import (
     _behavior_result_payload,
@@ -35,6 +36,8 @@ def _auto_voice_stream_hook_factory(
             data: dict[str, Any],
         ) -> tuple[list[tuple[str, dict[str, Any]]], threading.Event | None]:
             extras: list[tuple[str, dict[str, Any]]] = []
+            playback_metadata = _playback_metadata_from_payload(data, playback_key)
+            key = playback_metadata.playback_key
             if event == "audio":
                 audio_base64 = data.get("audio_base64")
                 if (
@@ -43,7 +46,7 @@ def _auto_voice_stream_hook_factory(
                     and audio_base64
                 ):
                     playback_scheduler.enqueue_audio(
-                        playback_key,
+                        key,
                         audio_base64=audio_base64,
                         sample_rate=int(
                             data.get("sample_rate")
@@ -52,6 +55,7 @@ def _auto_voice_stream_hook_factory(
                         ),
                         chunk_index=_optional_int(data.get("chunk_index")),
                         segment_index=_optional_int(data.get("segment_index")),
+                        playback_metadata=playback_metadata,
                     )
                 return extras, None
 
@@ -72,7 +76,7 @@ def _auto_voice_stream_hook_factory(
                 and audio_base64
             ):
                 playback_scheduler.enqueue_audio(
-                    playback_key,
+                    key,
                     audio_base64=audio_base64,
                     sample_rate=int(
                         data.get("sample_rate")
@@ -81,6 +85,7 @@ def _auto_voice_stream_hook_factory(
                     ),
                     chunk_index=_optional_int(data.get("chunk_index")),
                     segment_index=_optional_int(data.get("segment_index")),
+                    playback_metadata=playback_metadata,
                 )
 
             if playback_scheduler is None:
@@ -88,15 +93,15 @@ def _auto_voice_stream_hook_factory(
 
             done_event = threading.Event()
             playback_scheduler.complete(
-                playback_key,
+                key,
                 action_signal=_first_ok_module_key(behavior_results, "action"),
                 action_config=_module_config(behavior_config, "action"),
                 done_event=done_event,
+                playback_metadata=playback_metadata,
             )
             return extras, done_event
 
         return hook
 
     return factory
-
 

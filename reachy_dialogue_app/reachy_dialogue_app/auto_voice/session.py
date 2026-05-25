@@ -8,11 +8,10 @@ import unicodedata
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urljoin
 
 import numpy as np
-import requests
 
+from ..interaction.client import InteractionApiClient
 from ..vad import (
     SileroVad,
     UtteranceSegmenter,
@@ -20,7 +19,7 @@ from ..vad import (
     normalize_audio_sample,
     pcm16_bytes_to_float,
 )
-from .sse import audio_duration_from_payload, iter_sse_events, json_or_error
+from .sse import audio_duration_from_payload
 from .types import (
     AutoVoiceConfig,
     AutoVoiceGateState,
@@ -39,6 +38,8 @@ class AutoVoiceSession:
         mode: AutoVoiceMode,
         service_url: str,
         conversation_id: str,
+        interaction_session_id: str,
+        workflow: str,
         tts_enabled: bool,
         model_path: Path,
         config: AutoVoiceConfig,
@@ -49,7 +50,10 @@ class AutoVoiceSession:
         self.mode = mode
         self.service_url = service_url.rstrip("/") + "/"
         self.conversation_id = conversation_id
+        self.interaction_session_id = interaction_session_id
+        self.workflow = "onboarding" if workflow == "onboarding" else "chat"
         self.tts_enabled = tts_enabled
+        self.interaction_client = InteractionApiClient(self.service_url)
         self.config = config
         self.robot_audio_source = robot_audio_source
         self.stream_hook = stream_hook
@@ -341,28 +345,18 @@ class AutoVoiceSession:
             self.last_transcript = ""
 
     def _process_text_chat_session(self, transcript: str) -> None:
-        response: requests.Response | None = None
         output_audio_seconds = 0.0
         reply_parts: list[str] = []
         try:
             self._set_state("assistant_streaming")
-            response = requests.post(
-                urljoin(self.service_url, "/chat/stream"),
-                json={
-                    "conversation_id": self.conversation_id,
-                    "message": transcript,
-                    "tts_enabled": self.tts_enabled,
-                },
-                stream=True,
-                timeout=(10, self.config.service_timeout_seconds),
-            )
-            if response.status_code == 404:
-                response.close()
-                response = None
-                self._process_text_chat_json_fallback(transcript)
-                return
-
-            for event, data in iter_sse_events(response):
+            for item in self.interaction_client.text_stream(
+                interaction_session_id=self.interaction_session_id,
+                workflow=self.workflow,  # type: ignore[arg-type]
+                message=transcript,
+                tts_enabled=self.tts_enabled,
+            ):
+                event = item.event
+                data = item.data
                 if event == "delta":
                     delta = str(data.get("delta") or "")
                     if delta:
@@ -395,75 +389,26 @@ class AutoVoiceSession:
                     self._set_state("listening")
                     return
             self._cooldown_then_listen()
-        finally:
-            if response is not None:
-                response.close()
-
-    def _process_text_chat_json_fallback(self, transcript: str) -> None:
-        request_variants = (
-            {
-                "conversation_id": self.conversation_id,
-                "message": transcript,
-                "tts_enabled": self.tts_enabled,
-            },
-            {
-                "conversation_id": self.conversation_id,
-                "text": transcript,
-                "tts_enabled": self.tts_enabled,
-            },
-        )
-        response: requests.Response | None = None
-        for index, body in enumerate(request_variants):
-            response = requests.post(
-                urljoin(self.service_url, "/chat"),
-                json=body,
-                timeout=self.config.service_timeout_seconds,
-            )
-            if response.ok:
-                break
-            if response.status_code not in {400, 422} or index == len(request_variants) - 1:
-                break
-        assert response is not None
-        data = json_or_error(response)
-        reply = _reply_text_from_keys(data, ("reply", "response", "answer", "text"))
-        if reply:
-            self._emit("delta", {"delta": reply})
-        done_data = dict(data)
-        done_data.setdefault("conversation_id", self.conversation_id)
-        done_data.setdefault("transcript", transcript)
-        done_data.setdefault("reply", reply)
-        barrier: threading.Event | None = None
-        extras: list[tuple[str, dict[str, Any]]] = []
-        if self.stream_hook is not None:
-            extras, barrier = self.stream_hook("done", done_data)
-        for extra_event, extra_payload in extras:
-            self._emit(extra_event, extra_payload)
-        self._emit("done", done_data)
-        self._set_state("speaking" if audio_duration_from_payload(done_data) > 0 else "cooldown")
-        if barrier is not None:
-            barrier.wait(timeout=self.config.service_timeout_seconds)
-        self._touch_awake_activity()
-        self._emit("playback_done", {"ok": True, "session_id": self.session_id})
-        self._cooldown_then_listen()
+        except Exception as exc:
+            with self.lock:
+                self.last_error = str(exc) or exc.__class__.__name__
+            self._emit("error", {"message": self.last_error})
+            self._set_state("listening")
 
     def _process_live_session(self, live_session_id: str) -> None:
         self._set_state("transcribing")
 
-        response: requests.Response | None = None
         output_audio_seconds = 0.0
         try:
             self._set_state("assistant_streaming")
-            response = requests.post(
-                urljoin(self.service_url, "/voice/live/finish-stream"),
-                json={
-                    "session_id": live_session_id,
-                    "conversation_id": self.conversation_id,
-                    "tts_enabled": self.tts_enabled,
-                },
-                stream=True,
-                timeout=(10, self.config.service_timeout_seconds),
-            )
-            for event, data in iter_sse_events(response):
+            for item in self.interaction_client.live_finish_stream(
+                interaction_session_id=self.interaction_session_id,
+                workflow=self.workflow,  # type: ignore[arg-type]
+                live_session_id=live_session_id,
+                tts_enabled=self.tts_enabled,
+            ):
+                event = item.event
+                data = item.data
                 if event == "audio":
                     output_audio_seconds += audio_duration_from_payload(data)
                 barrier: threading.Event | None = None
@@ -495,32 +440,35 @@ class AutoVoiceSession:
             self.active_live_session_id = None
             self.active_utterance_id = None
             self.last_transcript = ""
-            if response is not None:
-                response.close()
 
     def _start_live_session(self) -> str:
-        response = requests.post(
-            urljoin(self.service_url, "/voice/live/start"),
-            json={
-                "sample_rate": self.config.vad.sample_rate,
-                "channels": 1,
-                "audio_format": "pcm",
-            },
-            timeout=10,
+        data = self.interaction_client.live_start(
+            interaction_session_id=self.interaction_session_id,
+            workflow=self.workflow,  # type: ignore[arg-type]
+            sample_rate=self.config.vad.sample_rate,
+            channels=1,
+            audio_format="pcm",
         )
-        data = json_or_error(response)
-        session_id = data.get("session_id")
+        session_id = data.get("live_session_id") or data.get("session_id")
         if not isinstance(session_id, str) or not session_id:
-            raise RuntimeError("voice/live/start did not return a session_id")
+            raise RuntimeError("interaction/live/start did not return a live_session_id")
         return session_id
 
     def _finish_transcript_only(self, live_session_id: str) -> dict[str, Any]:
-        response = requests.post(
-            urljoin(self.service_url, "/voice/live/finish-transcript"),
-            json={"session_id": live_session_id},
-            timeout=(10, self.config.service_timeout_seconds),
+        data = self.interaction_client.live_transcript(
+            interaction_session_id=self.interaction_session_id,
+            workflow=self.workflow,  # type: ignore[arg-type]
+            live_session_id=live_session_id,
         )
-        return json_or_error(response)
+        try:
+            self.interaction_client.live_abort(
+                interaction_session_id=self.interaction_session_id,
+                workflow=self.workflow,  # type: ignore[arg-type]
+                live_session_id=live_session_id,
+            )
+        except Exception:
+            pass
+        return data
 
     def _send_audio_to_live_session(
         self,
@@ -535,16 +483,13 @@ class AutoVoiceSession:
         for offset in range(0, len(raw), chunk_size):
             chunk = raw[offset : offset + chunk_size]
             chunk_is_final = is_final and offset + chunk_size >= len(raw)
-            response = requests.post(
-                urljoin(self.service_url, "/voice/live/chunk"),
-                json={
-                    "session_id": live_session_id,
-                    "audio_base64": base64.b64encode(chunk).decode("ascii"),
-                    "is_final": chunk_is_final,
-                },
-                timeout=10,
+            self.interaction_client.live_chunk(
+                interaction_session_id=self.interaction_session_id,
+                workflow=self.workflow,  # type: ignore[arg-type]
+                live_session_id=live_session_id,
+                audio_base64=base64.b64encode(chunk).decode("ascii"),
+                is_final=chunk_is_final,
             )
-            json_or_error(response)
 
     def _emit_live_transcript_if_due(self) -> None:
         now = time.monotonic()
@@ -558,12 +503,11 @@ class AutoVoiceSession:
         if live_session_id is None:
             return
         try:
-            response = requests.get(
-                urljoin(self.service_url, "/voice/live/transcript"),
-                params={"session_id": live_session_id},
-                timeout=3,
+            data = self.interaction_client.live_transcript(
+                interaction_session_id=self.interaction_session_id,
+                workflow=self.workflow,  # type: ignore[arg-type]
+                live_session_id=live_session_id,
             )
-            data = json_or_error(response)
         except Exception as exc:
             if force:
                 self._emit("warning", {"message": f"读取实时字幕失败：{exc}"})
@@ -592,10 +536,10 @@ class AutoVoiceSession:
         if live_session_id is None:
             return
         try:
-            requests.post(
-                urljoin(self.service_url, "/voice/live/abort"),
-                json={"session_id": live_session_id},
-                timeout=5,
+            self.interaction_client.live_abort(
+                interaction_session_id=self.interaction_session_id,
+                workflow=self.workflow,  # type: ignore[arg-type]
+                live_session_id=live_session_id,
             )
         except Exception:
             pass

@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from ..interaction.client import InteractionApiClient
 from .session import AutoVoiceSession
 from .types import (
     AutoVoiceConfig,
@@ -39,13 +40,26 @@ class AutoVoiceManager:
         mode: AutoVoiceMode,
         conversation_id: str,
         tts_enabled: bool,
+        workflow: str = "chat",
     ) -> AutoVoiceSession:
         session_id = f"auto_{uuid.uuid4().hex}"
+        service_url = self.service_url_getter()
+        interaction_session = InteractionApiClient(service_url).create_session(
+            workflow=workflow,  # type: ignore[arg-type]
+            conversation_id=conversation_id,
+            input_mode="auto",
+            tts_enabled=tts_enabled,
+        )
+        interaction_session_id = interaction_session.get("interaction_session_id")
+        if not isinstance(interaction_session_id, str) or not interaction_session_id:
+            raise RuntimeError("Interaction session creation did not return an id.")
         session = AutoVoiceSession(
             session_id=session_id,
             mode=mode,
-            service_url=self.service_url_getter(),
+            service_url=service_url,
             conversation_id=conversation_id,
+            interaction_session_id=interaction_session_id,
+            workflow=str(interaction_session.get("workflow") or workflow),
             tts_enabled=tts_enabled,
             model_path=self.model_path,
             config=self.config,
@@ -75,5 +89,4 @@ class AutoVoiceManager:
 
     def snapshot(self, session_id: str) -> AutoVoiceSnapshot:
         return self.get(session_id).snapshot()
-
 

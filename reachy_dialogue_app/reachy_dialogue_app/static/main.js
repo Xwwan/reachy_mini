@@ -19,6 +19,16 @@ const state = {
     sendQueue: [],
     sendLoopRunning: false,
     transcriptTimer: null,
+    autoVoiceSessionId: "",
+    autoVoiceMode: "",
+    autoVoiceEventSource: null,
+    autoStream: null,
+    autoAudioContext: null,
+    autoSourceNode: null,
+    autoProcessorNode: null,
+    autoPendingBytes: new Uint8Array(0),
+    autoSendQueue: [],
+    autoSendLoopRunning: false,
     messages: [],
     eventLog: [],
 };
@@ -43,6 +53,11 @@ const els = {
     finishLiveBtn: document.getElementById("finish-live-btn"),
     abortLiveBtn: document.getElementById("abort-live-btn"),
     liveTranscript: document.getElementById("live-transcript"),
+    autoLocalBtn: document.getElementById("auto-local-btn"),
+    autoRobotBtn: document.getElementById("auto-robot-btn"),
+    autoStopBtn: document.getElementById("auto-stop-btn"),
+    autoVoiceState: document.getElementById("auto-voice-state"),
+    autoVoiceStatus: document.getElementById("auto-voice-status"),
     liveState: document.getElementById("live-state"),
     runStatus: document.getElementById("run-status"),
     sessionId: document.getElementById("session-id"),
@@ -287,6 +302,216 @@ async function finishLive() {
     state.activeLiveSessionId = "";
     setLiveUi(false, "idle");
     renderStatus();
+}
+
+async function startAutoVoice(mode) {
+    if (state.autoVoiceSessionId) return;
+    const normalizedMode = mode === "robot" ? "robot" : "local";
+    await saveSettings();
+    const response = await fetch("/api/auto-voice/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            input_mode: normalizedMode,
+            workflow: normalizeWorkflow(),
+            conversation_id: els.conversationId.value || "reachy-mini-voice",
+            tts_enabled: els.ttsEnabled.checked,
+        }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+        throw new Error(payload.detail || "自动语音启动失败");
+    }
+    state.autoVoiceSessionId = payload.session_id;
+    state.autoVoiceMode = normalizedMode;
+    appendEvent("auto_voice_start", payload);
+    setAutoVoiceUi(true, payload.state || "listening");
+    connectAutoVoiceEvents(payload.session_id);
+    if (normalizedMode === "local") {
+        await startAutoLocalCapture();
+    }
+}
+
+function connectAutoVoiceEvents(sessionId) {
+    closeAutoVoiceEvents();
+    if (typeof EventSource !== "function") return;
+    const params = new URLSearchParams({ session_id: sessionId });
+    const source = new EventSource(`/api/auto-voice/events?${params}`);
+    state.autoVoiceEventSource = source;
+    source.addEventListener("message", (event) => {
+        handleAutoVoiceEvent("message", parseEventSourcePayload(event.data));
+    });
+    for (const eventName of [
+        "snapshot",
+        "state",
+        "gate_state",
+        "utterance",
+        "speech_start",
+        "speech_end",
+        "speech_cancelled",
+        "transcript",
+        "meta",
+        "delta",
+        "audio",
+        "state_delta",
+        "done",
+        "playback_done",
+        "wake_detected",
+        "wake_ignored",
+        "sleep_detected",
+        "wake_timeout",
+        "warning",
+        "error",
+    ]) {
+        source.addEventListener(eventName, (event) => {
+            handleAutoVoiceEvent(eventName, parseEventSourcePayload(event.data));
+        });
+    }
+    source.onerror = () => {
+        els.autoVoiceStatus.textContent = "自动语音事件流断开";
+    };
+}
+
+function closeAutoVoiceEvents() {
+    if (state.autoVoiceEventSource) {
+        state.autoVoiceEventSource.close();
+        state.autoVoiceEventSource = null;
+    }
+}
+
+function handleAutoVoiceEvent(event, data) {
+    appendEvent(`auto:${event}`, data);
+    if (data.state) setAutoVoiceUi(Boolean(state.autoVoiceSessionId), data.state);
+    if (data.gate_state) {
+        els.autoVoiceStatus.textContent = `gate ${data.gate_state}`;
+    }
+    if (event === "warning") {
+        els.autoVoiceStatus.textContent = data.message || "自动语音 warning";
+    }
+    if (event === "error") {
+        els.autoVoiceStatus.textContent = data.message || "自动语音错误";
+        setAutoVoiceUi(false, "error");
+    }
+    if ([
+        "transcript",
+        "meta",
+        "delta",
+        "audio",
+        "state_delta",
+        "done",
+        "playback_done",
+    ].includes(event)) {
+        handleStreamEvent(event, data, { source: "auto-voice" });
+    }
+}
+
+function parseEventSourcePayload(raw) {
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return { text: raw };
+    }
+}
+
+async function startAutoLocalCapture() {
+    state.autoStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+        },
+    });
+    state.autoAudioContext = new AudioContext();
+    state.autoSourceNode = state.autoAudioContext.createMediaStreamSource(state.autoStream);
+    state.autoProcessorNode = state.autoAudioContext.createScriptProcessor(4096, 1, 1);
+    state.autoProcessorNode.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        enqueueAutoPcm(downsampleToPcm16(input, state.autoAudioContext.sampleRate, TARGET_SAMPLE_RATE));
+    };
+    state.autoSourceNode.connect(state.autoProcessorNode);
+    state.autoProcessorNode.connect(state.autoAudioContext.destination);
+    startAutoSendLoop();
+}
+
+function enqueueAutoPcm(chunk) {
+    if (!chunk.length || !state.autoVoiceSessionId) return;
+    const merged = new Uint8Array(state.autoPendingBytes.length + chunk.length);
+    merged.set(state.autoPendingBytes, 0);
+    merged.set(chunk, state.autoPendingBytes.length);
+    let offset = 0;
+    while (merged.length - offset >= LIVE_CHUNK_BYTES) {
+        state.autoSendQueue.push(merged.slice(offset, offset + LIVE_CHUNK_BYTES));
+        offset += LIVE_CHUNK_BYTES;
+    }
+    state.autoPendingBytes = merged.slice(offset);
+}
+
+function startAutoSendLoop() {
+    if (state.autoSendLoopRunning) return;
+    state.autoSendLoopRunning = true;
+    autoSendLoop().catch((error) => setStatus(error.message || String(error)));
+}
+
+async function autoSendLoop() {
+    while (state.autoSendLoopRunning || state.autoSendQueue.length > 0) {
+        const chunk = state.autoSendQueue.shift();
+        if (!chunk) {
+            await sleep(25);
+            continue;
+        }
+        await fetch("/api/auto-voice/chunk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                session_id: state.autoVoiceSessionId,
+                audio_base64: bytesToBase64(chunk),
+                sample_rate: TARGET_SAMPLE_RATE,
+            }),
+        });
+    }
+}
+
+async function stopAutoVoice() {
+    const sessionId = state.autoVoiceSessionId;
+    closeAutoVoiceEvents();
+    await stopAutoLocalCapture();
+    state.autoVoiceSessionId = "";
+    state.autoVoiceMode = "";
+    setAutoVoiceUi(false, "idle");
+    if (!sessionId) return;
+    const response = await fetch("/api/auto-voice/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    appendEvent("auto_voice_stop", payload);
+}
+
+async function stopAutoLocalCapture() {
+    if (state.autoProcessorNode) state.autoProcessorNode.disconnect();
+    if (state.autoSourceNode) state.autoSourceNode.disconnect();
+    if (state.autoStream) {
+        for (const track of state.autoStream.getTracks()) track.stop();
+    }
+    if (state.autoAudioContext) await state.autoAudioContext.close();
+    state.autoProcessorNode = null;
+    state.autoSourceNode = null;
+    state.autoStream = null;
+    state.autoAudioContext = null;
+    state.autoSendLoopRunning = false;
+    state.autoSendQueue = [];
+    state.autoPendingBytes = new Uint8Array(0);
+}
+
+function setAutoVoiceUi(active, label) {
+    els.autoLocalBtn.disabled = active;
+    els.autoRobotBtn.disabled = active || Boolean(state.appMode.web_only);
+    els.autoStopBtn.disabled = !active;
+    els.autoVoiceState.textContent = label || (active ? "listening" : "idle");
+    els.autoVoiceStatus.textContent = active
+        ? `${state.autoVoiceMode || "auto"} ${label || ""}`.trim()
+        : "等待启动";
 }
 
 async function stopLocalCapture() {
@@ -538,6 +763,9 @@ function renderStatus() {
     els.liveState.textContent = state.activeLiveMode || "idle";
     els.finishLiveBtn.disabled = !state.activeLiveMode;
     els.abortLiveBtn.disabled = state.activeLiveMode !== "local";
+    if (!state.autoVoiceSessionId) {
+        els.autoRobotBtn.disabled = Boolean(state.appMode.web_only);
+    }
 }
 
 function setLiveUi(active, mode) {
@@ -625,6 +853,9 @@ function wireEvents() {
     els.robotLiveBtn.addEventListener("click", () => startRobotLive().catch((error) => setStatus(error.message)));
     els.finishLiveBtn.addEventListener("click", () => finishLive().catch((error) => setStatus(error.message)));
     els.abortLiveBtn.addEventListener("click", () => abortLive().catch((error) => setStatus(error.message)));
+    els.autoLocalBtn.addEventListener("click", () => startAutoVoice("local").catch((error) => setStatus(error.message)));
+    els.autoRobotBtn.addEventListener("click", () => startAutoVoice("robot").catch((error) => setStatus(error.message)));
+    els.autoStopBtn.addEventListener("click", () => stopAutoVoice().catch((error) => setStatus(error.message)));
     els.clearEventsBtn.addEventListener("click", clearEvents);
     els.workflow.addEventListener("change", normalizeWorkflow);
 }
@@ -646,6 +877,8 @@ window.__reachyDialogue = {
     startRobotLive,
     finishLive,
     abortLive,
+    startAutoVoice,
+    stopAutoVoice,
     handleStreamEvent,
     consumeSseResponse,
     playbackKeyFromPayload,

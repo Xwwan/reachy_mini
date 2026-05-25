@@ -172,6 +172,7 @@ class RobotMicInteractionFinishStreamPayload(BaseModel):
 
 class AutoVoiceStartPayload(BaseModel):
     input_mode: str
+    workflow: str = "chat"
     conversation_id: str | None = None
     tts_enabled: bool = True
 
@@ -1899,6 +1900,7 @@ def _register_auto_voice_routes(
                 mode=payload.input_mode,  # type: ignore[arg-type]
                 conversation_id=conversation_id,
                 tts_enabled=payload.tts_enabled,
+                workflow=_validate_workflow(payload.workflow),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -1908,6 +1910,8 @@ def _register_auto_voice_routes(
         return {
             "session_id": snapshot.session_id,
             "input_mode": snapshot.mode,
+            "workflow": session.workflow,
+            "interaction_session_id": session.interaction_session_id,
             "state": snapshot.state,
             "conversation_id": snapshot.conversation_id,
             "tts_enabled": snapshot.tts_enabled,

@@ -22,5 +22,7 @@ def test_frontend_targets_interaction_routes() -> None:
     assert "/api/interaction/text-stream" in main_js
     assert "/api/interaction/live/start" in main_js
     assert "/api/robot-mic/start-interaction" in main_js
+    assert "/api/auto-voice/start" in main_js
+    assert "/api/auto-voice/chunk" in main_js
     assert "/api/text-chat-stream" not in main_js
     assert "/api/followups/stream" not in main_js
