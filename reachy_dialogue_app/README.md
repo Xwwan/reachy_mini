@@ -89,6 +89,37 @@ cd /home/tzhx/wyl/reachy_mini/reachy_dialogue_app
 http://127.0.0.1:8042/
 ```
 
+## Mac / 树莓派真实音频对比测试
+
+如果同一套 dialogue app 在 Mac 上播放顺畅、在树莓派上播放一卡一卡，优先测真实 dialogue SSE 链路。先分别在 Mac / 树莓派上启动 app 和对话服务，然后运行：
+
+```bash
+python reachy_dialogue_app/scripts/dialogue_stream_probe.py \
+  --label mac \
+  --app-url http://127.0.0.1:8042 \
+  --output /tmp/reachy_dialogue_stream_mac.json \
+  --save-audio /tmp/reachy_dialogue_stream_mac.wav
+```
+
+树莓派上同样运行：
+
+```bash
+python reachy_dialogue_app/scripts/dialogue_stream_probe.py \
+  --label raspberry-pi \
+  --app-url http://127.0.0.1:8042 \
+  --output /tmp/reachy_dialogue_stream_pi.json \
+  --save-audio /tmp/reachy_dialogue_stream_pi.wav
+```
+
+对比：
+
+```bash
+python reachy_dialogue_app/scripts/dialogue_stream_probe.py \
+  --compare /tmp/reachy_dialogue_stream_mac.json /tmp/reachy_dialogue_stream_pi.json
+```
+
+这个 probe 会走真实 `/api/text-chat-stream`，测真实 TTS audio 事件的到达时间、真实音频 chunk 时长，并可把收到的真实 PCM 保存成 WAV。重点看 `interarrival p95 ms`、`chunk duration mean ms`、`starvation total ms`。如果 audio 事件到达间隔经常大于上一段音频本身的时长，浏览器或机器人播放器就会断粮，听起来就是一卡一卡。
+
 ## 不连接机器人：web-only 文字输入和本机麦克风测试
 
 如果只想验证文字对话、本机电脑麦克风、实时 STT、流式文本回复和流式 TTS 播放，

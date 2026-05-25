@@ -1,0 +1,409 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import platform
+import statistics
+import sys
+import time
+import wave
+from pathlib import Path
+from typing import Any
+from urllib.parse import urljoin
+
+import requests
+
+
+DEFAULT_APP_URL = "http://127.0.0.1:8042"
+DEFAULT_TEXT = "请用一句话回答：今天适合和 Reachy Mini 聊些什么？"
+DEFAULT_CONVERSATION_ID = "stream-probe"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Probe the real dialogue app SSE path and measure streamed audio "
+            "arrival timing for Mac/Raspberry Pi comparison."
+        )
+    )
+    parser.add_argument("--label", default="", help="Short label, e.g. mac or pi")
+    parser.add_argument("--app-url", default=DEFAULT_APP_URL)
+    parser.add_argument("--service-url", default=None)
+    parser.add_argument("--conversation-id", default=DEFAULT_CONVERSATION_ID)
+    parser.add_argument("--text", default=DEFAULT_TEXT)
+    parser.add_argument("--no-tts", action="store_true")
+    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--save-audio",
+        type=Path,
+        default=None,
+        help="Save the real received TTS PCM chunks as a WAV file.",
+    )
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("BASELINE_JSON", "CANDIDATE_JSON"),
+        help="Compare two saved probe outputs instead of running a new probe.",
+    )
+    args = parser.parse_args()
+
+    if args.compare:
+        baseline = _read_json(Path(args.compare[0]))
+        candidate = _read_json(Path(args.compare[1]))
+        print(_format_comparison(baseline, candidate))
+        return
+
+    result = run_probe(
+        label=args.label,
+        app_url=args.app_url,
+        service_url=args.service_url,
+        conversation_id=args.conversation_id,
+        text=args.text,
+        tts_enabled=not args.no_tts,
+        timeout=args.timeout,
+        save_audio=args.save_audio,
+    )
+    encoded = json.dumps(result, indent=2, ensure_ascii=False)
+    print(encoded)
+    if args.output is not None:
+        args.output.write_text(encoded + "\n", encoding="utf-8")
+
+
+def run_probe(
+    *,
+    label: str,
+    app_url: str,
+    service_url: str | None,
+    conversation_id: str,
+    text: str,
+    tts_enabled: bool,
+    timeout: float,
+    save_audio: Path | None,
+) -> dict[str, Any]:
+    app_url = _with_trailing_slash(app_url)
+    if service_url:
+        settings_payload = {
+            "service_url": service_url,
+            "conversation_id": conversation_id,
+        }
+        settings_response = requests.post(
+            urljoin(app_url, "api/settings"),
+            json=settings_payload,
+            timeout=10,
+        )
+        settings_response.raise_for_status()
+
+    payload = {
+        "text": text,
+        "conversation_id": conversation_id,
+        "tts_enabled": tts_enabled,
+    }
+    started = time.perf_counter()
+    response = requests.post(
+        urljoin(app_url, "api/text-chat-stream"),
+        json=payload,
+        stream=True,
+        timeout=(10, timeout),
+    )
+    response.raise_for_status()
+
+    events: list[dict[str, Any]] = []
+    audio_payloads: list[tuple[bytes, int]] = []
+    try:
+        for event in _iter_sse_events(response):
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            audio_info = _audio_info(data)
+            audio_payload = _audio_payload(data)
+            if audio_payload is not None:
+                audio_payloads.append(audio_payload)
+            events.append(
+                {
+                    "event": event["event"],
+                    "elapsed_ms": elapsed_ms,
+                    "audio": audio_info,
+                    "data_keys": sorted(data),
+                }
+            )
+    finally:
+        response.close()
+
+    total_elapsed_ms = (time.perf_counter() - started) * 1000.0
+    saved_audio = _save_audio_payloads(audio_payloads, save_audio) if save_audio else None
+    return {
+        "schema_version": 1,
+        "label": label,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "environment": _environment_snapshot(),
+        "config": {
+            "app_url": app_url,
+            "service_url": service_url,
+            "conversation_id": conversation_id,
+            "text": text,
+            "tts_enabled": tts_enabled,
+            "timeout": timeout,
+            "save_audio": str(save_audio) if save_audio else None,
+        },
+        "summary": _summarize(events, total_elapsed_ms),
+        "saved_audio": saved_audio,
+        "events": events,
+    }
+
+
+def _iter_sse_events(response: requests.Response):
+    event_name = "message"
+    data_lines: list[str] = []
+    for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
+        if raw_line is None:
+            continue
+        line = raw_line.rstrip("\r")
+        if not line:
+            if data_lines:
+                yield {
+                    "event": event_name,
+                    "data": _parse_json("\n".join(data_lines)),
+                }
+            event_name = "message"
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event_name = line.split(":", 1)[1].strip() or "message"
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line.split(":", 1)[1].lstrip())
+    if data_lines:
+        yield {"event": event_name, "data": _parse_json("\n".join(data_lines))}
+
+
+def _audio_info(data: dict[str, Any]) -> dict[str, Any] | None:
+    payload = _audio_payload(data)
+    if payload is None:
+        return None
+    audio_bytes, sample_rate = payload
+    return {
+        "byte_count": len(audio_bytes),
+        "sample_rate": sample_rate,
+        "duration_ms": len(audio_bytes) / (2.0 * sample_rate) * 1000.0,
+        "chunk_index": _optional_int(data.get("chunk_index")),
+        "segment_index": _optional_int(data.get("segment_index")),
+    }
+
+
+def _audio_payload(data: dict[str, Any]) -> tuple[bytes, int] | None:
+    audio_base64 = data.get("audio_base64")
+    if not isinstance(audio_base64, str) or not audio_base64:
+        return None
+    sample_rate = _int(data.get("sample_rate") or data.get("audio_sample_rate"), 24000)
+    try:
+        audio_bytes = base64.b64decode(audio_base64, validate=False)
+    except Exception:
+        return None
+    return audio_bytes, sample_rate
+
+
+def _save_audio_payloads(
+    audio_payloads: list[tuple[bytes, int]],
+    path: Path,
+) -> dict[str, Any]:
+    if not audio_payloads:
+        return {
+            "path": str(path),
+            "ok": False,
+            "reason": "no audio chunks received",
+        }
+    sample_rates = {sample_rate for _, sample_rate in audio_payloads}
+    if len(sample_rates) != 1:
+        return {
+            "path": str(path),
+            "ok": False,
+            "reason": f"mixed sample rates: {sorted(sample_rates)}",
+        }
+    sample_rate = sample_rates.pop()
+    audio_bytes = b"".join(payload for payload, _ in audio_payloads)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(audio_bytes)
+    return {
+        "path": str(path),
+        "ok": True,
+        "sample_rate": sample_rate,
+        "byte_count": len(audio_bytes),
+        "duration_ms": len(audio_bytes) / (2.0 * sample_rate) * 1000.0,
+        "chunk_count": len(audio_payloads),
+    }
+
+
+def _summarize(events: list[dict[str, Any]], total_elapsed_ms: float) -> dict[str, Any]:
+    audio_events = [event for event in events if event.get("audio")]
+    audio_arrivals = [float(event["elapsed_ms"]) for event in audio_events]
+    audio_durations = [float(event["audio"]["duration_ms"]) for event in audio_events]
+    interarrival_ms = [
+        audio_arrivals[index] - audio_arrivals[index - 1]
+        for index in range(1, len(audio_arrivals))
+    ]
+    starvation_ms = [
+        max(0.0, interarrival_ms[index] - audio_durations[index - 1])
+        for index in range(len(interarrival_ms))
+    ]
+    backlog_ms = _backlog_series(audio_arrivals, audio_durations)
+    event_counts: dict[str, int] = {}
+    for event in events:
+        name = str(event.get("event") or "message")
+        event_counts[name] = event_counts.get(name, 0) + 1
+    first_audio_ms = audio_arrivals[0] if audio_arrivals else None
+    return {
+        "total_elapsed_ms": total_elapsed_ms,
+        "event_counts": event_counts,
+        "audio_event_count": len(audio_events),
+        "first_audio_ms": first_audio_ms,
+        "audio_duration_ms_total": sum(audio_durations),
+        "audio_interarrival_ms": _stats(interarrival_ms),
+        "audio_chunk_duration_ms": _stats(audio_durations),
+        "starvation_ms": _stats(starvation_ms),
+        "starvation_ms_total": sum(starvation_ms),
+        "backlog_ms": _stats(backlog_ms),
+        "final_backlog_ms": backlog_ms[-1] if backlog_ms else None,
+    }
+
+
+def _backlog_series(arrivals_ms: list[float], durations_ms: list[float]) -> list[float]:
+    backlog = 0.0
+    previous_arrival = None
+    series = []
+    for arrival, duration in zip(arrivals_ms, durations_ms):
+        if previous_arrival is not None:
+            backlog = max(0.0, backlog - (arrival - previous_arrival))
+        backlog += duration
+        series.append(backlog)
+        previous_arrival = arrival
+    return series
+
+
+def _format_comparison(baseline: dict[str, Any], candidate: dict[str, Any]) -> str:
+    rows = [
+        ("total elapsed ms", ("summary", "total_elapsed_ms")),
+        ("first audio ms", ("summary", "first_audio_ms")),
+        ("audio event count", ("summary", "audio_event_count")),
+        ("audio duration total ms", ("summary", "audio_duration_ms_total")),
+        ("interarrival mean ms", ("summary", "audio_interarrival_ms", "mean")),
+        ("interarrival p95 ms", ("summary", "audio_interarrival_ms", "p95")),
+        ("chunk duration mean ms", ("summary", "audio_chunk_duration_ms", "mean")),
+        ("starvation total ms", ("summary", "starvation_ms_total")),
+        ("starvation p95 ms", ("summary", "starvation_ms", "p95")),
+        ("final backlog ms", ("summary", "final_backlog_ms")),
+    ]
+    baseline_label = baseline.get("label") or "baseline"
+    candidate_label = candidate.get("label") or "candidate"
+    lines = [
+        f"Compare {baseline_label} -> {candidate_label}",
+        "",
+        f"{'metric':32} {'baseline':>14} {'candidate':>14} {'x baseline':>12}",
+        "-" * 76,
+    ]
+    for name, keys in rows:
+        left = _get(baseline, *keys)
+        right = _get(candidate, *keys)
+        lines.append(
+            f"{name:32} {_fmt(left):>14} {_fmt(right):>14} {_fmt(_ratio(right, left)):>12}"
+        )
+    return "\n".join(lines)
+
+
+def _environment_snapshot() -> dict[str, Any]:
+    snapshot = {
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "system": platform.system(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "cpu_count": os.cpu_count(),
+        "pid": os.getpid(),
+        "cwd": str(Path.cwd()),
+    }
+    if hasattr(os, "getloadavg"):
+        try:
+            snapshot["loadavg"] = list(os.getloadavg())
+        except OSError:
+            pass
+    return snapshot
+
+
+def _parse_json(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return {"raw": value}
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _stats(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"count": 0, "min": None, "mean": None, "p95": None, "max": None}
+    ordered = sorted(values)
+    p95_index = min(len(ordered) - 1, int(len(ordered) * 0.95))
+    return {
+        "count": len(values),
+        "min": ordered[0],
+        "mean": statistics.fmean(values),
+        "p95": ordered[p95_index],
+        "max": ordered[-1],
+    }
+
+
+def _with_trailing_slash(value: str) -> str:
+    return value.rstrip("/") + "/"
+
+
+def _int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _get(data: dict[str, Any], *keys: str) -> Any:
+    current: Any = data
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _ratio(value: Any, baseline: Any) -> float | None:
+    if not isinstance(value, (int, float)):
+        return None
+    if not isinstance(baseline, (int, float)) or baseline == 0:
+        return None
+    return value / baseline
+
+
+def _fmt(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    return str(value)
+
+
+if __name__ == "__main__":
+    main()
