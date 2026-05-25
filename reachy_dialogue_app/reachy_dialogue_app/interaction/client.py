@@ -190,6 +190,24 @@ class InteractionApiClient:
         )
         return json_or_error(response)
 
+    def live_finish_transcript(
+        self,
+        *,
+        interaction_session_id: str,
+        workflow: Workflow,
+        live_session_id: str,
+    ) -> JsonDict:
+        response = self.session.post(
+            self._url("/interaction/live/finish-transcript"),
+            json={
+                "interaction_session_id": interaction_session_id,
+                "workflow": workflow,
+                "live_session_id": live_session_id,
+            },
+            timeout=self.stream_timeout,
+        )
+        return json_or_error(response)
+
     def live_finish_stream(
         self,
         *,

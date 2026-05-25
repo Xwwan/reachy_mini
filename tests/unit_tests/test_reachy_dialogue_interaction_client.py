@@ -147,6 +147,45 @@ def test_live_chunk_posts_required_interaction_fields() -> None:
     }
 
 
+def test_live_finish_transcript_posts_to_interaction_endpoint() -> None:
+    response = FakeResponse(
+        payload={
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "live_session_id": "live_1",
+            "transcript": "最终识别文本",
+            "is_final": True,
+        }
+    )
+    session = FakeSession(response)
+    client = InteractionApiClient(
+        "http://backend.test/",
+        session=session,  # type: ignore[arg-type]
+    )
+
+    result = client.live_finish_transcript(
+        interaction_session_id="isess_1",
+        workflow="chat",
+        live_session_id="live_1",
+    )
+
+    assert result["transcript"] == "最终识别文本"
+    assert session.calls == [
+        (
+            "POST",
+            "http://backend.test/interaction/live/finish-transcript",
+            {
+                "json": {
+                    "interaction_session_id": "isess_1",
+                    "workflow": "chat",
+                    "live_session_id": "live_1",
+                },
+                "timeout": (10.0, 120.0),
+            },
+        )
+    ]
+
+
 def test_json_or_error_uses_contract_error_message() -> None:
     response = FakeResponse(
         ok=False,

@@ -107,6 +107,16 @@ class FakeLiveClient:
         self.calls.append(("live_abort", kwargs))
         return {"ok": True}
 
+    def live_finish_transcript(self, **kwargs):
+        self.calls.append(("live_finish_transcript", kwargs))
+        return {
+            "interaction_session_id": kwargs["interaction_session_id"],
+            "workflow": kwargs["workflow"],
+            "live_session_id": kwargs["live_session_id"],
+            "transcript": "你好",
+            "is_final": True,
+        }
+
     def live_finish_stream(self, **kwargs):
         self.calls.append(("live_finish_stream", kwargs))
         yield SseEvent(
@@ -174,8 +184,7 @@ def test_auto_voice_session_uses_interaction_live_methods() -> None:
         "live_start",
         "live_chunk",
         "live_transcript",
-        "live_transcript",
-        "live_abort",
+        "live_finish_transcript",
     ]
     for _, kwargs in client.calls:
         assert kwargs["interaction_session_id"] == "isess_auto"

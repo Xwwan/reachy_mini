@@ -455,20 +455,11 @@ class AutoVoiceSession:
         return session_id
 
     def _finish_transcript_only(self, live_session_id: str) -> dict[str, Any]:
-        data = self.interaction_client.live_transcript(
+        return self.interaction_client.live_finish_transcript(
             interaction_session_id=self.interaction_session_id,
             workflow=self.workflow,  # type: ignore[arg-type]
             live_session_id=live_session_id,
         )
-        try:
-            self.interaction_client.live_abort(
-                interaction_session_id=self.interaction_session_id,
-                workflow=self.workflow,  # type: ignore[arg-type]
-                live_session_id=live_session_id,
-            )
-        except Exception:
-            pass
-        return data
 
     def _send_audio_to_live_session(
         self,
