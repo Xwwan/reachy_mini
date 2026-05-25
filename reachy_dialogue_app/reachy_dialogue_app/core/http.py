@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urljoin
 
 import requests
 from fastapi import HTTPException
@@ -15,10 +14,6 @@ def _normalize_service_url(value: str) -> str:
     return value.rstrip("/") + "/"
 
 
-def _audio_level_from_rms(rms: float) -> float:
-    return float(np.clip(rms / 0.08, 0.0, 1.0))
-
-
 def _json_or_error(response: requests.Response) -> dict[str, Any]:
     try:
         data = response.json()
@@ -28,41 +23,6 @@ def _json_or_error(response: requests.Response) -> dict[str, Any]:
         message = data.get("error", {}).get("message", response.text)
         raise HTTPException(status_code=response.status_code, detail=message)
     return data
-
-
-def _post_text_chat(
-    *,
-    service_url: str,
-    conversation_id: str,
-    text: str,
-    tts_enabled: bool,
-) -> dict[str, Any]:
-    request_variants = [
-        {
-            "conversation_id": conversation_id,
-            "message": text,
-            "tts_enabled": tts_enabled,
-        },
-        {
-            "conversation_id": conversation_id,
-            "text": text,
-            "tts_enabled": tts_enabled,
-        },
-    ]
-    last_response: requests.Response | None = None
-    for index, body in enumerate(request_variants):
-        response = requests.post(
-            urljoin(service_url, "/chat"),
-            json=body,
-            timeout=90,
-        )
-        if response.ok:
-            return _json_or_error(response)
-        last_response = response
-        if response.status_code not in {400, 422} or index == len(request_variants) - 1:
-            break
-    assert last_response is not None
-    return _json_or_error(last_response)
 
 
 def _reply_text_from_payload(data: dict[str, Any]) -> str:
@@ -101,50 +61,6 @@ def _daemon_volume_request(
             status_code=503,
             detail=f"音量接口不可用：{exc}",
         ) from exc
-
-
-def _iter_sse_events(response: requests.Response):
-    if not response.ok:
-        _json_or_error(response)
-
-    event = "message"
-    data_lines: list[str] = []
-    for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
-        if raw_line is None:
-            continue
-        line = raw_line.rstrip("\r")
-        if line == "":
-            if data_lines:
-                yield {
-                    "event": event,
-                    "data": _decode_sse_json("\n".join(data_lines)),
-                }
-            event = "message"
-            data_lines = []
-            continue
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event = line[len("event:") :].strip() or "message"
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-
-    if data_lines:
-        yield {
-            "event": event,
-            "data": _decode_sse_json("\n".join(data_lines)),
-        }
-
-
-def _decode_sse_json(payload: str) -> dict[str, Any]:
-    try:
-        data = json.loads(payload)
-    except json.JSONDecodeError:
-        return {"text": payload}
-    if isinstance(data, dict):
-        return data
-    return {"value": data}
 
 
 def _sse_frame(event: str, data: dict[str, Any]) -> str:
