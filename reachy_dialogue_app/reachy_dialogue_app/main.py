@@ -108,6 +108,35 @@ class InteractionTextStreamPayload(BaseModel):
     tts_enabled: bool = True
 
 
+class InteractionLiveStartPayload(BaseModel):
+    interaction_session_id: str
+    workflow: str = "chat"
+    sample_rate: int = INPUT_SAMPLE_RATE
+    channels: int = 1
+    audio_format: str = "pcm"
+
+
+class InteractionLiveChunkPayload(BaseModel):
+    interaction_session_id: str
+    workflow: str = "chat"
+    live_session_id: str
+    audio_base64: str
+    is_final: bool = False
+
+
+class InteractionLiveFinishStreamPayload(BaseModel):
+    interaction_session_id: str
+    workflow: str = "chat"
+    live_session_id: str
+    tts_enabled: bool = True
+
+
+class InteractionLiveAbortPayload(BaseModel):
+    interaction_session_id: str
+    workflow: str = "chat"
+    live_session_id: str
+
+
 class ConversationActionPayload(BaseModel):
     conversation_id: str | None = None
 
@@ -885,6 +914,16 @@ def _validate_input_mode(value: str) -> str:
     return input_mode
 
 
+def _required_string(value: str, field_name: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field_name} is required.",
+        )
+    return stripped
+
+
 def _interaction_http_exception(exc: InteractionApiError) -> HTTPException:
     return HTTPException(
         status_code=exc.status_code or 502,
@@ -1003,6 +1042,219 @@ def _register_interaction_routes(
                     interaction_session_id=interaction_session_id,
                     workflow=workflow,
                     message=message,
+                    tts_enabled=payload.tts_enabled,
+                ):
+                    event = item.event
+                    data = item.data
+                    if event == "audio":
+                        audio_base64 = data.get("audio_base64")
+                        if (
+                            playback_scheduler is not None
+                            and isinstance(audio_base64, str)
+                            and audio_base64
+                        ):
+                            metadata = _playback_metadata_from_payload(
+                                data,
+                                playback_key or fallback_playback_key,
+                            )
+                            playback_key = playback_scheduler.enqueue_audio(
+                                metadata.playback_key,
+                                audio_base64=audio_base64,
+                                sample_rate=int(
+                                    data.get("sample_rate")
+                                    or data.get("audio_sample_rate")
+                                    or current["tts_sample_rate"]
+                                ),
+                                chunk_index=_optional_int(data.get("chunk_index")),
+                                segment_index=_optional_int(
+                                    data.get("segment_index")
+                                ),
+                                playback_metadata=metadata,
+                            )
+                        yield _sse_frame(event, data)
+                        continue
+
+                    if event == "done":
+                        reply = _reply_text_from_payload(data)
+                        behavior_results = _trigger_behaviors_from_text(
+                            reply,
+                            behavior_config,
+                        )
+                        for result in behavior_results:
+                            yield _sse_frame(
+                                "behavior",
+                                _behavior_result_payload(result),
+                            )
+                        playback_done: threading.Event | None = None
+                        if playback_scheduler is not None and playback_key:
+                            metadata = _playback_metadata_from_payload(
+                                data,
+                                playback_key,
+                            )
+                            playback_done = threading.Event()
+                            playback_scheduler.complete(
+                                playback_key,
+                                action_signal=_first_ok_module_key(
+                                    behavior_results,
+                                    "action",
+                                ),
+                                action_config=_module_config(
+                                    behavior_config,
+                                    "action",
+                                ),
+                                done_event=playback_done,
+                                playback_metadata=metadata,
+                            )
+                            playback_completed = True
+                        yield _sse_frame(event, data)
+                        if playback_done is not None:
+                            playback_done.wait(timeout=120)
+                            yield _sse_frame(
+                                "playback_done",
+                                {"ok": True, "playback_key": playback_key},
+                            )
+                        elif playback_scheduler is None:
+                            yield _sse_frame(
+                                "playback_done",
+                                {"ok": True, "skipped": True},
+                            )
+                        return
+
+                    yield _sse_frame(event, data)
+                    if event == "error":
+                        if playback_scheduler is not None:
+                            playback_scheduler.abort(
+                                playback_key or fallback_playback_key
+                            )
+                        return
+            except InteractionApiError as exc:
+                if not playback_completed and playback_scheduler is not None:
+                    playback_scheduler.abort(playback_key or fallback_playback_key)
+                yield _sse_frame(
+                    "error",
+                    {
+                        "message": exc.message,
+                        "status_code": exc.status_code,
+                    },
+                )
+            except Exception as exc:
+                if not playback_completed and playback_scheduler is not None:
+                    playback_scheduler.abort(playback_key or fallback_playback_key)
+                yield _sse_frame(
+                    "error",
+                    {"message": str(exc) or exc.__class__.__name__},
+                )
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/api/interaction/live/start")
+    def interaction_live_start(payload: InteractionLiveStartPayload) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        interaction_session_id = payload.interaction_session_id.strip()
+        if not interaction_session_id:
+            raise HTTPException(
+                status_code=422,
+                detail="interaction_session_id is required.",
+            )
+        if payload.audio_format != "pcm":
+            raise HTTPException(status_code=422, detail="audio_format must be 'pcm'.")
+        try:
+            return client_factory(current["service_url"]).live_start(
+                interaction_session_id=interaction_session_id,
+                workflow=_validate_workflow(payload.workflow),
+                sample_rate=payload.sample_rate,
+                channels=payload.channels,
+                audio_format="pcm",
+            )
+        except InteractionApiError as exc:
+            raise _interaction_http_exception(exc) from exc
+
+    @app.post("/api/interaction/live/chunk")
+    def interaction_live_chunk(payload: InteractionLiveChunkPayload) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        try:
+            return client_factory(current["service_url"]).live_chunk(
+                interaction_session_id=_required_string(
+                    payload.interaction_session_id,
+                    "interaction_session_id",
+                ),
+                workflow=_validate_workflow(payload.workflow),
+                live_session_id=_required_string(
+                    payload.live_session_id,
+                    "live_session_id",
+                ),
+                audio_base64=payload.audio_base64,
+                is_final=payload.is_final,
+            )
+        except InteractionApiError as exc:
+            raise _interaction_http_exception(exc) from exc
+
+    @app.get("/api/interaction/live/transcript")
+    def interaction_live_transcript(
+        interaction_session_id: str,
+        live_session_id: str,
+        workflow: str = "chat",
+    ) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        try:
+            return client_factory(current["service_url"]).live_transcript(
+                interaction_session_id=_required_string(
+                    interaction_session_id,
+                    "interaction_session_id",
+                ),
+                workflow=_validate_workflow(workflow),
+                live_session_id=_required_string(live_session_id, "live_session_id"),
+            )
+        except InteractionApiError as exc:
+            raise _interaction_http_exception(exc) from exc
+
+    @app.post("/api/interaction/live/abort")
+    def interaction_live_abort(payload: InteractionLiveAbortPayload) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        try:
+            return client_factory(current["service_url"]).live_abort(
+                interaction_session_id=_required_string(
+                    payload.interaction_session_id,
+                    "interaction_session_id",
+                ),
+                workflow=_validate_workflow(payload.workflow),
+                live_session_id=_required_string(
+                    payload.live_session_id,
+                    "live_session_id",
+                ),
+            )
+        except InteractionApiError as exc:
+            raise _interaction_http_exception(exc) from exc
+
+    @app.post("/api/interaction/live/finish-stream")
+    def interaction_live_finish_stream(
+        payload: InteractionLiveFinishStreamPayload,
+    ) -> StreamingResponse:
+        current = _snapshot(settings, settings_lock)
+        workflow = _validate_workflow(payload.workflow)
+        interaction_session_id = _required_string(
+            payload.interaction_session_id,
+            "interaction_session_id",
+        )
+        live_session_id = _required_string(payload.live_session_id, "live_session_id")
+
+        def event_stream():
+            playback_key: str | None = None
+            playback_completed = False
+            fallback_playback_key = _new_playback_key("interaction-live")
+            try:
+                client = client_factory(current["service_url"])
+                for item in client.live_finish_stream(
+                    interaction_session_id=interaction_session_id,
+                    workflow=workflow,
+                    live_session_id=live_session_id,
                     tts_enabled=payload.tts_enabled,
                 ):
                     event = item.event

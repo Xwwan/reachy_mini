@@ -271,11 +271,195 @@ def test_interaction_text_stream_route_proxies_new_backend_events() -> None:
     ]
 
 
+def test_interaction_live_routes_proxy_new_backend_live_methods() -> None:
+    fake_client = FakeInteractionRouteClient()
+    app = FastAPI()
+    settings = {
+        "service_url": "http://backend.test",
+        "conversation_id": "default-conversation",
+        "tts_sample_rate": 24000,
+    }
+    dialogue_main._register_interaction_routes(
+        app,
+        settings,
+        dialogue_main.threading.Lock(),
+        behavior_config={"enabled": False},
+        client_factory=lambda service_url: fake_client,  # type: ignore[arg-type]
+    )
+    client = TestClient(app)
+
+    start_response = client.post(
+        "/api/interaction/live/start",
+        json={
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "sample_rate": 16000,
+            "channels": 1,
+            "audio_format": "pcm",
+        },
+    )
+    chunk_response = client.post(
+        "/api/interaction/live/chunk",
+        json={
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "live_session_id": "live_1",
+            "audio_base64": "AAAA",
+            "is_final": False,
+        },
+    )
+    transcript_response = client.get(
+        "/api/interaction/live/transcript",
+        params={
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "live_session_id": "live_1",
+        },
+    )
+    abort_response = client.post(
+        "/api/interaction/live/abort",
+        json={
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "live_session_id": "live_1",
+        },
+    )
+
+    assert start_response.status_code == 200
+    assert start_response.json()["live_session_id"] == "live_1"
+    assert chunk_response.status_code == 200
+    assert chunk_response.json()["accepted_bytes"] == 2
+    assert transcript_response.status_code == 200
+    assert transcript_response.json()["transcript"] == "hello"
+    assert abort_response.status_code == 200
+    assert abort_response.json() == {"ok": True}
+    assert fake_client.live_start_calls == [
+        {
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "sample_rate": 16000,
+            "channels": 1,
+            "audio_format": "pcm",
+        }
+    ]
+    assert fake_client.live_chunk_calls == [
+        {
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "live_session_id": "live_1",
+            "audio_base64": "AAAA",
+            "is_final": False,
+        }
+    ]
+    assert fake_client.live_transcript_calls == [
+        {
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "live_session_id": "live_1",
+        }
+    ]
+    assert fake_client.live_abort_calls == [
+        {
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "live_session_id": "live_1",
+        }
+    ]
+
+
+def test_interaction_live_finish_stream_route_proxies_events() -> None:
+    fake_client = FakeInteractionRouteClient(
+        live_events=[
+            SseEvent(
+                "transcript",
+                {
+                    "interaction_session_id": "isess_1",
+                    "workflow": "chat",
+                    "live_session_id": "live_1",
+                    "transcript": "hello",
+                    "is_final": True,
+                },
+            ),
+            SseEvent(
+                "audio",
+                {
+                    "interaction_session_id": "isess_1",
+                    "workflow": "chat",
+                    "run_id": "irun_1",
+                    "playback_key": "chat-tts-irun_1",
+                    "audio_base64": "AAAA",
+                    "sample_rate": 24000,
+                    "chunk_index": 0,
+                },
+            ),
+            SseEvent(
+                "done",
+                {
+                    "interaction_session_id": "isess_1",
+                    "workflow": "chat",
+                    "run_id": "irun_1",
+                    "transcript": "hello",
+                    "reply": "hi",
+                },
+            ),
+        ]
+    )
+    app = FastAPI()
+    settings = {
+        "service_url": "http://backend.test",
+        "conversation_id": "default-conversation",
+        "tts_sample_rate": 24000,
+    }
+    dialogue_main._register_interaction_routes(
+        app,
+        settings,
+        dialogue_main.threading.Lock(),
+        behavior_config={"enabled": False},
+        client_factory=lambda service_url: fake_client,  # type: ignore[arg-type]
+    )
+
+    response = TestClient(app).post(
+        "/api/interaction/live/finish-stream",
+        json={
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "live_session_id": "live_1",
+            "tts_enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "event: transcript" in body
+    assert "event: audio" in body
+    assert "event: done" in body
+    assert "event: playback_done" in body
+    assert '"skipped": true' in body
+    assert fake_client.live_finish_stream_calls == [
+        {
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "live_session_id": "live_1",
+            "tts_enabled": True,
+        }
+    ]
+
+
 class FakeInteractionRouteClient:
-    def __init__(self, text_events: list[SseEvent] | None = None) -> None:
+    def __init__(
+        self,
+        text_events: list[SseEvent] | None = None,
+        live_events: list[SseEvent] | None = None,
+    ) -> None:
         self.text_events = text_events or []
+        self.live_events = live_events or []
         self.create_session_calls: list[dict] = []
         self.text_stream_calls: list[dict] = []
+        self.live_start_calls: list[dict] = []
+        self.live_chunk_calls: list[dict] = []
+        self.live_transcript_calls: list[dict] = []
+        self.live_finish_stream_calls: list[dict] = []
+        self.live_abort_calls: list[dict] = []
 
     def create_session(
         self,
@@ -318,3 +502,108 @@ class FakeInteractionRouteClient:
             }
         )
         yield from self.text_events
+
+    def live_start(
+        self,
+        *,
+        interaction_session_id: str,
+        workflow: str,
+        sample_rate: int,
+        channels: int,
+        audio_format: str,
+    ) -> dict:
+        self.live_start_calls.append(
+            {
+                "interaction_session_id": interaction_session_id,
+                "workflow": workflow,
+                "sample_rate": sample_rate,
+                "channels": channels,
+                "audio_format": audio_format,
+            }
+        )
+        return {
+            "interaction_session_id": interaction_session_id,
+            "workflow": workflow,
+            "live_session_id": "live_1",
+            "session_id": "live_1",
+            "sample_rate": sample_rate,
+            "channels": channels,
+            "audio_format": audio_format,
+        }
+
+    def live_chunk(
+        self,
+        *,
+        interaction_session_id: str,
+        workflow: str,
+        live_session_id: str,
+        audio_base64: str,
+        is_final: bool,
+    ) -> dict:
+        self.live_chunk_calls.append(
+            {
+                "interaction_session_id": interaction_session_id,
+                "workflow": workflow,
+                "live_session_id": live_session_id,
+                "audio_base64": audio_base64,
+                "is_final": is_final,
+            }
+        )
+        return {"ok": True, "accepted_bytes": 2}
+
+    def live_transcript(
+        self,
+        *,
+        interaction_session_id: str,
+        workflow: str,
+        live_session_id: str,
+    ) -> dict:
+        self.live_transcript_calls.append(
+            {
+                "interaction_session_id": interaction_session_id,
+                "workflow": workflow,
+                "live_session_id": live_session_id,
+            }
+        )
+        return {
+            "interaction_session_id": interaction_session_id,
+            "workflow": workflow,
+            "live_session_id": live_session_id,
+            "transcript": "hello",
+            "is_final": False,
+            "error": None,
+        }
+
+    def live_finish_stream(
+        self,
+        *,
+        interaction_session_id: str,
+        workflow: str,
+        live_session_id: str,
+        tts_enabled: bool,
+    ):
+        self.live_finish_stream_calls.append(
+            {
+                "interaction_session_id": interaction_session_id,
+                "workflow": workflow,
+                "live_session_id": live_session_id,
+                "tts_enabled": tts_enabled,
+            }
+        )
+        yield from self.live_events
+
+    def live_abort(
+        self,
+        *,
+        interaction_session_id: str,
+        workflow: str,
+        live_session_id: str,
+    ) -> dict:
+        self.live_abort_calls.append(
+            {
+                "interaction_session_id": interaction_session_id,
+                "workflow": workflow,
+                "live_session_id": live_session_id,
+            }
+        )
+        return {"ok": True}
