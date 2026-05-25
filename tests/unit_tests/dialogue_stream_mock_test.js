@@ -47,7 +47,6 @@ class FakeElement {
         this.className = "";
         this.scrollTop = 0;
         this.scrollHeight = 0;
-        this.options = [];
     }
 
     append(...children) {
@@ -81,19 +80,16 @@ class FakeElement {
 
 function createElementForId(id) {
     const element = new FakeElement("div", id);
-    if (id === "voice-input-mode") {
-        element.value = "local";
-        element.options = [{ value: "local", disabled: false }, { value: "robot", disabled: false }];
-    } else if (id === "text-tts-enabled") {
-        element.checked = true;
-    } else if (id === "service-url") {
+    if (id === "service-url") {
         element.value = "http://127.0.0.1:12312";
     } else if (id === "conversation-id") {
         element.value = "stream-test";
-    } else if (id === "tts-sample-rate") {
-        element.value = "24000";
-    } else if (id === "speaker-volume" || id === "microphone-volume") {
-        element.value = "50";
+    } else if (id === "workflow") {
+        element.value = "chat";
+    } else if (id === "tts-enabled") {
+        element.checked = true;
+    } else if (id === "message-input") {
+        element.value = "";
     }
     return element;
 }
@@ -106,27 +102,37 @@ function makeJsonResponse(payload, ok = true) {
     };
 }
 
+function makeSseResponse(frames) {
+    const encoder = new TextEncoder();
+    let index = 0;
+    return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        body: {
+            getReader() {
+                return {
+                    read() {
+                        if (index >= frames.length) {
+                            return Promise.resolve({ done: true, value: undefined });
+                        }
+                        const value = encoder.encode(frames[index]);
+                        index += 1;
+                        return Promise.resolve({ done: false, value });
+                    },
+                };
+            },
+        },
+    };
+}
+
+function frame(event, data) {
+    return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
 function createSandbox() {
     const elements = new Map();
-    const eventSourceUrls = [];
-
-    class FakeEventSource {
-        constructor(url) {
-            this.url = url;
-            this.readyState = 0;
-            this.listeners = new Map();
-            eventSourceUrls.push(url);
-        }
-
-        addEventListener(type, handler) {
-            if (!this.listeners.has(type)) this.listeners.set(type, []);
-            this.listeners.get(type).push(handler);
-        }
-
-        close() {
-            this.readyState = 2;
-        }
-    }
+    const calls = [];
 
     const document = {
         body: new FakeElement("body"),
@@ -141,26 +147,127 @@ function createSandbox() {
         },
     };
 
-    const fetch = async (url) => {
+    const fetch = async (url, options = {}) => {
         const pathOnly = String(url).split("?")[0];
-        if (pathOnly === "/api/settings") {
+        const method = options.method || "GET";
+        const body = options.body ? JSON.parse(options.body) : null;
+        calls.push({ url: String(url), path: pathOnly, method, body });
+
+        if (pathOnly === "/api/settings" && method === "GET") {
             return makeJsonResponse({
                 service_url: "http://127.0.0.1:12312",
                 conversation_id: "stream-test",
                 tts_sample_rate: 24000,
             });
         }
+        if (pathOnly === "/api/settings" && method === "POST") {
+            return makeJsonResponse({
+                service_url: body.service_url,
+                conversation_id: body.conversation_id,
+                tts_sample_rate: 24000,
+            });
+        }
         if (pathOnly === "/api/app-mode") {
-            return makeJsonResponse({ web_only: true });
+            return makeJsonResponse({ web_only: false });
         }
         if (pathOnly === "/api/health") {
             return makeJsonResponse({ ok: true, service_url: "http://127.0.0.1:12312" });
         }
-        if (pathOnly === "/api/audio-volume") {
+        if (pathOnly === "/api/interaction/session") {
+            assert.equal(method, "POST");
+            assert.equal(body.workflow, "chat");
+            assert.equal(body.conversation_id, "stream-test");
+            assert.equal(body.tts_enabled, true);
+            assert.ok(["text", "robot"].includes(body.input_mode));
             return makeJsonResponse({
-                speaker: { volume: null, available: false },
-                microphone: { volume: null, available: false },
+                interaction_session_id: "isess_1",
+                workflow: "chat",
+                conversation_id: "stream-test",
+                input_mode: body.input_mode,
+                status: "active",
             });
+        }
+        if (pathOnly === "/api/interaction/text-stream") {
+            assert.equal(method, "POST");
+            assert.equal(body.interaction_session_id, "isess_1");
+            assert.equal(body.workflow, "chat");
+            assert.equal(body.message, "测试一下");
+            assert.equal(body.tts_enabled, true);
+            return makeSseResponse([
+                frame("meta", {
+                    workflow: "chat",
+                    interaction_session_id: "isess_1",
+                    run_id: "irun_1",
+                    request_id: "req_1",
+                }),
+                frame("delta", {
+                    workflow: "chat",
+                    interaction_session_id: "isess_1",
+                    run_id: "irun_1",
+                    delta: "你好",
+                }),
+                frame("delta", {
+                    workflow: "chat",
+                    interaction_session_id: "isess_1",
+                    run_id: "irun_1",
+                    delta: "世界",
+                }),
+                frame("audio", {
+                    workflow: "chat",
+                    interaction_session_id: "isess_1",
+                    run_id: "irun_1",
+                    playback_key: "chat-tts-irun_1",
+                    audio_base64: "AQIDBA==",
+                    sample_rate: 24000,
+                }),
+                frame("done", {
+                    workflow: "chat",
+                    interaction_session_id: "isess_1",
+                    run_id: "irun_1",
+                    request_id: "req_1",
+                    playback_key: "chat-tts-irun_1",
+                    transcript: "测试一下",
+                    reply: "你好世界",
+                    status: "completed",
+                }),
+                frame("playback_done", {
+                    ok: true,
+                    run_id: "irun_1",
+                    playback_key: "chat-tts-irun_1",
+                }),
+            ]);
+        }
+        if (pathOnly === "/api/robot-mic/start-interaction") {
+            assert.equal(method, "POST");
+            assert.equal(body.interaction_session_id, "isess_1");
+            assert.equal(body.workflow, "chat");
+            return makeJsonResponse({ ok: true, status: "recording" });
+        }
+        if (pathOnly === "/api/robot-mic/finish-interaction-stream") {
+            assert.equal(method, "POST");
+            assert.equal(body.tts_enabled, true);
+            return makeSseResponse([
+                frame("transcript", {
+                    workflow: "chat",
+                    interaction_session_id: "isess_1",
+                    run_id: "irun_voice",
+                    transcript: "语音测试",
+                    is_final: true,
+                }),
+                frame("delta", {
+                    workflow: "chat",
+                    interaction_session_id: "isess_1",
+                    run_id: "irun_voice",
+                    delta: "收到",
+                }),
+                frame("done", {
+                    workflow: "chat",
+                    interaction_session_id: "isess_1",
+                    run_id: "irun_voice",
+                    reply: "收到",
+                    status: "completed",
+                }),
+            ]);
         }
         return makeJsonResponse({ ok: true });
     };
@@ -169,7 +276,6 @@ function createSandbox() {
         assert,
         console,
         document,
-        EventSource: FakeEventSource,
         fetch,
         navigator: {
             mediaDevices: {
@@ -178,28 +284,8 @@ function createSandbox() {
         },
         AudioContext: class {
             constructor() {
-                this.currentTime = 0;
                 this.sampleRate = 48000;
-                this.state = "running";
                 this.destination = {};
-            }
-
-            createBuffer() {
-                return {
-                    duration: 0,
-                    getChannelData: () => new Float32Array(1),
-                };
-            }
-
-            createBufferSource() {
-                return {
-                    connect() {},
-                    disconnect() {},
-                    start() {},
-                    set buffer(value) {
-                        this._buffer = value;
-                    },
-                };
             }
 
             createMediaStreamSource() {
@@ -208,10 +294,6 @@ function createSandbox() {
 
             createScriptProcessor() {
                 return { connect() {}, disconnect() {}, onaudioprocess: null };
-            }
-
-            resume() {
-                return Promise.resolve();
             }
 
             close() {
@@ -238,14 +320,11 @@ function createSandbox() {
         clearTimeout,
         setInterval: () => 1,
         clearInterval: () => {},
-        __eventSourceUrls: eventSourceUrls,
+        btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+        __calls: calls,
     };
     sandbox.window = sandbox;
     return sandbox;
-}
-
-function frame(event, data) {
-    return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
 async function main() {
@@ -272,300 +351,39 @@ async function main() {
 
     await vm.runInContext(`
         (async () => {
-            function resetState() {
-                chatState.messages = [];
-                chatState.requests = new Map();
-                chatState.eventLog = [];
-                chatState.seenFollowups = new Set();
-                chatState.followupMessages = new Map();
-                chatState.followupPlaybackGroups = new Map();
-                chatState.followupPlaybackKey = null;
-                chatState.followupPlaybackFallbackKey = null;
-                appMode = { web_only: true };
-                els.voiceInputMode.value = "local";
-                els.textTtsEnabled.checked = true;
-                els.transcript.textContent = "";
-                els.reply.textContent = "";
-                renderTimeline();
-                renderInspector();
-            }
+            const api = window.__reachyDialogue;
+            api.els.messageInput.value = "测试一下";
+            await api.sendText();
 
-            function installPlaybackSpy() {
-                const calls = [];
-                const activeGroups = new Set();
-                function resolvePlaybackKey(data, fallbackKey) {
-                    if (fallbackKey && activeGroups.has(fallbackKey)) {
-                        return fallbackKey;
-                    }
-                    return playbackKeyFromPayload(data) || fallbackKey || "fallback-audio";
-                }
-                localAudioPlaybackScheduler.enqueueAudio = (data, options = {}) => {
-                    const key = resolvePlaybackKey(data, options.fallbackKey);
-                    activeGroups.add(key);
-                    calls.push({
-                        type: "audio",
-                        key,
-                        data,
-                    });
-                    return calls[calls.length - 1].key;
-                };
-                localAudioPlaybackScheduler.complete = (data, options = {}) => {
-                    const key = resolvePlaybackKey(data, options.fallbackKey);
-                    calls.push({
-                        type: "complete",
-                        key,
-                        data,
-                    });
-                    activeGroups.delete(key);
-                    return calls[calls.length - 1].key;
-                };
-                localAudioPlaybackScheduler.abort = (key) => {
-                    calls.push({ type: "abort", key });
-                    activeGroups.delete(key);
-                };
-                return calls;
-            }
+            assert.equal(api.state.interactionSessionId, "isess_1");
+            assert.equal(api.state.activeRunId, "irun_1");
+            assert.equal(api.state.activePlaybackKey, "chat-tts-irun_1");
+            assert.equal(api.state.runStatusText, "playback done");
+            assert.equal(api.els.sessionId.textContent, "isess_1");
+            assert.equal(api.els.runId.textContent, "irun_1");
+            assert.equal(api.els.playbackKey.textContent, "chat-tts-irun_1");
+            assert.ok(api.state.messages.some((message) => message.role === "user" && message.content === "测试一下"));
+            assert.ok(api.state.messages.some((message) => message.role === "assistant" && message.content === "你好世界"));
+            assert.ok(api.els.eventLog.textContent.includes("audio"));
+            assert.equal(api.playbackKeyFromPayload({ run_id: "irun_fallback" }), "run:irun_fallback");
 
-            function makeSseResponse(events) {
-                const encoder = new TextEncoder();
-                let index = 0;
-                return {
-                    body: {
-                        getReader() {
-                            return {
-                                read() {
-                                    if (index >= events.length) {
-                                        return Promise.resolve({ done: true, value: undefined });
-                                    }
-                                    const value = encoder.encode(events[index]);
-                                    index += 1;
-                                    return Promise.resolve({ done: false, value });
-                                },
-                            };
-                        },
-                    },
-                };
-            }
+            await api.startRobotLive();
+            assert.equal(api.state.activeLiveMode, "robot");
+            assert.equal(api.els.finishLiveBtn.disabled, false);
+            await api.finishLive();
+            assert.equal(api.state.activeLiveMode, "");
+            assert.equal(api.els.liveTranscript.textContent, "语音测试");
+            assert.ok(api.state.messages.some((message) => message.role === "assistant" && message.content === "收到"));
 
-            resetState();
-            const textPlayback = installPlaybackSpy();
-            els.manualText.value = "测试一下";
-            fetch = async (url, options = {}) => {
-                if (String(url) === "/api/settings") {
-                    return {
-                        ok: true,
-                        json: async () => ({
-                            service_url: "http://127.0.0.1:12312/",
-                            conversation_id: "stream-test",
-                            tts_sample_rate: 24000,
-                        }),
-                    };
-                }
-                if (String(url) === "/api/text-chat-stream" && options.method === "POST") {
-                    const body = JSON.parse(options.body);
-                    assert.equal(body.conversation_id, "stream-test");
-                    assert.equal(body.text, "测试一下");
-                    assert.equal(body.tts_enabled, true);
-                    return {
-                        ok: true,
-                        json: async () => ({}),
-                        body: makeSseResponse([
-                            ${JSON.stringify(frame("transcript", {
-                                conversation_id: "stream-test",
-                                transcript: "测试一下",
-                            }))},
-                            ${JSON.stringify(frame("meta", {
-                                request_id: "req-initial",
-                                conversation_id: "stream-test",
-                                user_turn_id: "u1",
-                                assistant_turn_id: "a1",
-                            }))},
-                            ${JSON.stringify(frame("delta", {
-                                request_id: "req-initial",
-                                assistant_turn_id: "a1",
-                                delta: "你好",
-                            }))},
-                            ${JSON.stringify(frame("delta", {
-                                request_id: "req-initial",
-                                assistant_turn_id: "a1",
-                                delta: "世界",
-                            }))},
-                            ${JSON.stringify(frame("audio", {
-                                request_id: "req-initial",
-                                assistant_turn_id: "a1",
-                                audio_base64: "AQIDBA==",
-                                sample_rate: 24000,
-                                chunk_index: 0,
-                            }))},
-                            ${JSON.stringify(frame("done", {
-                                request_id: "req-initial",
-                                conversation_id: "stream-test",
-                                transcript: "测试一下",
-                                reply: "你好世界",
-                                user_turn_id: "u1",
-                                assistant_turn_id: "a1",
-                            }))},
-                            ${JSON.stringify(frame("playback_done", {
-                                ok: true,
-                            }))},
-                        ]).body,
-                    };
-                }
-                return {
-                    ok: true,
-                    json: async () => ({ ok: true }),
-                };
-            };
-            await sendManualText();
-
-            assert.equal(els.reply.textContent, "你好世界");
-            assert.equal(els.transcript.textContent, "测试一下");
-            assert.equal(chatState.requests.get("req-initial").initialStatus, "done");
-            assert.deepEqual(
-                textPlayback.map((call) => call.type),
-                ["audio", "complete"],
-            );
-            assert.equal(textPlayback[0].key, "request:req-initial:turn:a1");
-            assert.equal(textPlayback[1].key, textPlayback[0].key);
-
-            resetState();
-            const followupPlayback = installPlaybackSpy();
-            handleFollowupPayload({
-                event: "meta",
-                data: {
-                    request_id: "req-followup",
-                    followup_type: "supplement",
-                    original_user_query: "刚才的问题",
-                },
-            }, "message");
-            handleFollowupPayload({
-                event: "delta",
-                data: {
-                    request_id: "req-followup",
-                    followup_type: "supplement",
-                    delta: "补充",
-                },
-            }, "message");
-            handleFollowupPayload({
-                event: "delta",
-                data: {
-                    request_id: "req-followup",
-                    followup_type: "supplement",
-                    delta: "内容",
-                },
-            }, "message");
-            handleFollowupPayload({
-                event: "audio",
-                data: {
-                    request_id: "req-followup",
-                    followup_turn_id: "f1",
-                    followup_type: "supplement",
-                    audio_base64: "BQYHCA==",
-                    sample_rate: 24000,
-                    chunk_index: 0,
-                },
-            }, "message");
-            handleFollowupPayload({
-                event: "followup_done",
-                data: {
-                    request_id: "req-followup",
-                    followup_turn_id: "f1",
-                    followup_type: "supplement",
-                    reply: "补充内容",
-                },
-            }, "message");
-
-            const followupMessage = chatState.messages.find((message) => message.kind === "followup");
-            assert.ok(followupMessage, "follow-up message should be rendered");
-            assert.equal(followupMessage.content, "补充内容");
-            assert.equal(followupMessage.status, "done");
-            assert.deepEqual(
-                followupPlayback.map((call) => call.type),
-                ["audio", "complete"],
-            );
-
-            resetState();
-            const donePayloadPlayback = installPlaybackSpy();
-            handleFollowupPayload({
-                request_id: "req-followup-done-audio",
-                followup_turn_id: "f2",
-                followup_type: "supplement",
-                reply: "结束事件里带音频",
-                audio_base64: "CQoLDA==",
-                sample_rate: 24000,
-            }, "done");
-
-            assert.deepEqual(
-                donePayloadPlayback.map((call) => call.type),
-                ["audio", "complete"],
-            );
-            assert.equal(donePayloadPlayback[0].data.audio_base64, "CQoLDA==");
-
-            resetState();
-            const interleavedPlayback = installPlaybackSpy();
-            handleFollowupPayload({
-                event: "audio",
-                data: {
-                    request_id: "req-followup-a",
-                    followup_turn_id: "fa",
-                    audio_base64: "AQIDBA==",
-                    sample_rate: 24000,
-                    chunk_index: 0,
-                },
-            }, "message");
-            handleFollowupPayload({
-                event: "audio",
-                data: {
-                    request_id: "req-followup-b",
-                    followup_turn_id: "fb",
-                    audio_base64: "BQYHCA==",
-                    sample_rate: 24000,
-                    chunk_index: 0,
-                },
-            }, "message");
-            handleFollowupPayload({
-                event: "followup_done",
-                data: {
-                    request_id: "req-followup-b",
-                    followup_turn_id: "fb",
-                },
-            }, "message");
-            handleFollowupPayload({
-                event: "followup_done",
-                data: {
-                    request_id: "req-followup-a",
-                    followup_turn_id: "fa",
-                },
-            }, "message");
-
-            assert.deepEqual(
-                interleavedPlayback.map((call) => call.type),
-                ["audio", "audio", "complete", "complete"],
-            );
-            assert.notEqual(
-                interleavedPlayback[0].key,
-                interleavedPlayback[1].key,
-                "interleaved follow-up audio should use separate playback groups",
-            );
-            assert.equal(interleavedPlayback[2].key, interleavedPlayback[1].key);
-            assert.equal(interleavedPlayback[3].key, interleavedPlayback[0].key);
-
-            els.textTtsEnabled.checked = true;
-            connectFollowups();
-            assert.ok(
-                __eventSourceUrls.at(-1).includes("tts_enabled=true"),
-                "follow-up EventSource should request TTS when text TTS is enabled",
-            );
-            els.textTtsEnabled.checked = false;
-            connectFollowups();
-            assert.ok(
-                __eventSourceUrls.at(-1).includes("tts_enabled=false"),
-                "follow-up EventSource should disable TTS when text TTS is disabled",
-            );
+            const sessionCalls = __calls.filter((call) => call.path === "/api/interaction/session");
+            assert.equal(sessionCalls.length, 1, "text and robot voice should reuse one interaction session");
+            assert.ok(__calls.some((call) => call.path === "/api/interaction/text-stream"));
+            assert.ok(__calls.some((call) => call.path === "/api/robot-mic/start-interaction"));
+            assert.ok(__calls.some((call) => call.path === "/api/robot-mic/finish-interaction-stream"));
         })()
     `, context);
 
-    console.log("dialogue stream mock test passed");
+    console.log("dialogue interaction mock test passed");
 }
 
 main().catch((error) => {

@@ -11,171 +11,113 @@
 <body>
     <main class="app-shell">
         <header class="topbar">
-            <div>
-                <h1>Reachy Dialogue</h1>
-                <p id="connection-status">未检查服务</p>
+            <div class="brand-lockup">
+                <div class="reachy-mark" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                </div>
+                <div>
+                    <h1>Reachy Dialogue</h1>
+                    <p id="connection-status">未连接</p>
+                </div>
             </div>
             <div class="topbar-actions">
-                <a class="secondary-link" href="/static/local-mic-test.html">本机麦克风测试</a>
-                <button id="health-btn" type="button">检查</button>
+                <button id="health-btn" type="button" title="检查服务">检查</button>
+                <button id="new-session-btn" type="button" title="新建 session">新建</button>
             </div>
         </header>
 
-        <section class="settings-panel" aria-label="设置">
+        <section class="settings-band" aria-label="Interaction 设置">
             <label>
-                <span>对话服务地址</span>
+                <span>服务地址</span>
                 <input id="service-url" type="url" inputmode="url" autocomplete="off">
             </label>
             <label>
-                <span>会话 ID</span>
+                <span>Conversation</span>
                 <input id="conversation-id" type="text" autocomplete="off">
             </label>
             <label>
-                <span>TTS 采样率</span>
-                <input id="tts-sample-rate" type="number" min="8000" step="1000">
+                <span>Workflow</span>
+                <select id="workflow">
+                    <option value="chat">chat</option>
+                    <option value="onboarding">onboarding</option>
+                </select>
+            </label>
+            <label class="toggle-line">
+                <input id="tts-enabled" type="checkbox" checked>
+                <span>TTS</span>
             </label>
         </section>
 
         <div class="workspace">
-            <section class="chat-panel" aria-label="对话">
-                <div class="chat-header">
+            <section class="dialogue-surface" aria-label="对话">
+                <div class="surface-header">
                     <div>
-                        <span class="eyebrow">实时对话</span>
-                        <h2>即时回答 + 异步记忆补充</h2>
+                        <span class="eyebrow">Interaction</span>
+                        <h2 id="session-title">未创建 session</h2>
                     </div>
-                    <div class="stream-indicator">
-                        <span id="followup-dot" class="status-dot muted"></span>
-                        <strong id="followup-status">记忆通道未连接</strong>
-                    </div>
+                    <span id="workflow-pill" class="status-pill">chat</span>
                 </div>
 
-                <div id="timeline" class="timeline" aria-live="polite">
-                    <div class="empty-state">
-                        <strong>准备开始对话</strong>
-                        <p>文本和语音回复会出现在这里。记忆补充稍后到达时会作为独立消息插入。</p>
-                    </div>
-                </div>
+                <div id="timeline" class="timeline" aria-live="polite"></div>
 
-                <section class="composer-panel" aria-label="发送消息">
-                    <label class="composer-label" for="manual-text">手动输入</label>
-                    <textarea id="manual-text" rows="3" placeholder="输入要对 Reachy 说的话"></textarea>
-                    <div class="composer-actions">
-                        <label class="inline-toggle">
-                            <input id="text-tts-enabled" type="checkbox" checked>
-                            <span>朗读</span>
-                        </label>
-                        <button id="send-text-btn" type="button">发送文本</button>
-                    </div>
-                </section>
-
-                <section class="voice-panel" aria-label="语音聊天">
-                    <div class="voice-mode-row">
-                        <label>
-                            <span>语音输入</span>
-                            <select id="voice-input-mode">
-                                <option value="robot">机器人麦克风</option>
-                                <option value="local">电脑麦克风</option>
-                            </select>
-                        </label>
-                        <button id="local-abort-btn" class="secondary-action compact-action" type="button" disabled>取消</button>
-                    </div>
-                    <div class="auto-voice-row">
-                        <button id="auto-voice-btn" class="secondary-action" type="button">进入对话模式</button>
-                        <strong id="auto-voice-status">手动录音</strong>
-                    </div>
-                    <button id="record-btn" class="record-button" type="button">开始录音</button>
-                    <div id="recording-time">00:00</div>
-                    <div class="meter" aria-label="机器人麦克风音量">
-                        <div class="meter-header">
-                            <span>麦克风音量</span>
-                            <strong id="mic-level-text">RMS 0.00000</strong>
-                        </div>
-                        <div class="meter-track">
-                            <div id="mic-level-fill" class="meter-fill"></div>
-                        </div>
-                    </div>
-                    <div class="live-caption" aria-live="polite">
-                        <span>实时字幕（机器人麦克风）</span>
-                        <p id="live-transcript">等待录音</p>
-                    </div>
+                <section class="composer" aria-label="文本输入">
+                    <textarea id="message-input" rows="3" placeholder="输入要对 Reachy 说的话"></textarea>
+                    <button id="send-text-btn" type="button">发送</button>
                 </section>
             </section>
 
-            <aside class="side-panel" aria-label="开发者面板">
-                <section class="volume-panel" aria-label="音量设置">
-                    <div class="section-heading">
-                        <span>音量</span>
-                        <button id="refresh-volume-btn" class="secondary-action compact-action" type="button">刷新</button>
+            <aside class="control-rail" aria-label="控制">
+                <section class="tool-panel" aria-label="语音">
+                    <div class="panel-heading">
+                        <span>语音</span>
+                        <strong id="live-state">idle</strong>
                     </div>
-                    <div class="volume-grid">
-                        <label class="range-control">
-                            <span>扬声器 <strong id="speaker-volume-value">--</strong></span>
-                            <input id="speaker-volume" type="range" min="0" max="100" step="1" value="50">
-                        </label>
-                        <label class="range-control">
-                            <span>麦克风 <strong id="microphone-volume-value">--</strong></span>
-                            <input id="microphone-volume" type="range" min="0" max="100" step="1" value="50">
-                        </label>
+                    <div class="segmented">
+                        <button id="local-live-btn" type="button">本机麦克风</button>
+                        <button id="robot-live-btn" type="button">机器人麦克风</button>
                     </div>
+                    <div class="live-actions">
+                        <button id="finish-live-btn" class="secondary-action" type="button" disabled>结束语音</button>
+                        <button id="abort-live-btn" class="secondary-action" type="button" disabled>取消</button>
+                    </div>
+                    <p id="live-transcript" class="caption-line">等待语音输入</p>
                 </section>
 
-                <section class="debug-panel" aria-label="开发者调试">
-                    <div class="section-heading">
-                        <span>开发者面板</span>
-                        <strong id="request-count">0 requests</strong>
+                <section class="tool-panel" aria-label="Run 状态">
+                    <div class="panel-heading">
+                        <span>Run</span>
+                        <strong id="run-status">idle</strong>
                     </div>
-                    <div class="debug-actions">
-                        <button id="pending-followups-btn" class="secondary-action compact-action" type="button">Pending</button>
-                        <button id="curate-memory-btn" class="secondary-action compact-action" type="button">Curate</button>
-                        <button id="refresh-profile-btn" class="secondary-action compact-action" type="button">Profile</button>
-                    </div>
-                    <div class="inspector-grid">
+                    <dl class="status-grid">
                         <div>
-                            <span>会话</span>
-                            <strong id="inspector-conversation">--</strong>
+                            <dt>Session</dt>
+                            <dd id="session-id">--</dd>
                         </div>
                         <div>
-                            <span>Follow-up</span>
-                            <strong id="inspector-followup">disconnected</strong>
+                            <dt>Run</dt>
+                            <dd id="run-id">--</dd>
                         </div>
-                    </div>
-                    <div id="request-list" class="request-list"></div>
-                    <pre id="debug-info">等待事件</pre>
+                        <div>
+                            <dt>Playback</dt>
+                            <dd id="playback-key">--</dd>
+                        </div>
+                        <div>
+                            <dt>Live</dt>
+                            <dd id="live-session-id">--</dd>
+                        </div>
+                    </dl>
                 </section>
 
-                <section class="playback-test-panel" aria-label="机器人麦克风回放测试">
-                    <div class="section-heading">
-                        <span>麦克风回放测试</span>
-                        <strong id="playback-test-status">待机</strong>
+                <section class="tool-panel debug-panel" aria-label="事件">
+                    <div class="panel-heading">
+                        <span>事件</span>
+                        <button id="clear-events-btn" class="secondary-action compact-action" type="button">清空</button>
                     </div>
-                    <div class="playback-test-controls">
-                        <button id="playback-test-btn" class="secondary-action" type="button">开始测试</button>
-                        <div id="playback-test-time">00:00</div>
-                    </div>
-                    <div class="meter" aria-label="回放测试音量">
-                        <div class="meter-header">
-                            <span>测试音量</span>
-                            <strong id="playback-test-level-text">RMS 0.00000</strong>
-                        </div>
-                        <div class="meter-track">
-                            <div id="playback-test-level-fill" class="meter-fill"></div>
-                        </div>
-                    </div>
-                    <p id="playback-test-result" class="test-result">等待测试</p>
+                    <pre id="event-log">等待事件</pre>
                 </section>
             </aside>
         </div>
-
-        <section class="legacy-output" aria-label="最近一轮文本">
-            <div class="message user">
-                <span>最近识别/输入</span>
-                <p id="transcript">等待输入</p>
-            </div>
-            <div class="message robot">
-                <span>最近回复</span>
-                <p id="reply">服务返回后会显示在这里</p>
-            </div>
-        </section>
 
         <div id="status-line" role="status">准备就绪</div>
     </main>
