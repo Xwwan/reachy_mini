@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urljoin
@@ -25,7 +26,10 @@ from .audio.playback import (
     _playback_key_from_payload,
 )
 from .audio.robot_mic import LiveTranscript, RobotMicPlaybackTester, RobotMicRecorder
-from .audio.robot_output import _handle_robot_job
+from .audio.robot_output import (
+    _handle_robot_job,
+    _report_robot_job_playback_result,
+)
 from .auto_voice import (
     AutoVoiceManager,
     _auto_voice_config,
@@ -67,6 +71,7 @@ from .dialogue.text_tts import (
     _iter_text_tts_audio_payloads,
     _payload_has_audio,
 )
+from .interaction import InteractionApiClient
 
 
 class SettingsPayload(BaseModel):
@@ -151,6 +156,7 @@ class ReachyDialogueApp(ReachyMiniApp):
         }
         jobs: queue.Queue[RobotJob] = queue.Queue()
         playback_scheduler = RobotAudioPlaybackScheduler(jobs)
+        failed_playback_keys: set[str] = set()
         recorder = RobotMicRecorder(reachy_mini)
         playback_tester = RobotMicPlaybackTester(reachy_mini)
         behavior_config = _load_behavior_config()
@@ -601,17 +607,66 @@ class ReachyDialogueApp(ReachyMiniApp):
                 job = jobs.get(timeout=0.1)
             except queue.Empty:
                 continue
-            try:
-                _handle_robot_job(reachy_mini, job)
-            finally:
-                if job.done_event is not None:
-                    job.done_event.set()
+            _process_robot_job(
+                reachy_mini,
+                job,
+                service_url=_snapshot(settings, settings_lock)["service_url"],
+                failed_playback_keys=failed_playback_keys,
+            )
 
 
 
 
 
 
+
+
+def _process_robot_job(
+    reachy_mini: ReachyMini,
+    job: RobotJob,
+    *,
+    service_url: str,
+    failed_playback_keys: set[str],
+    client_factory: Callable[[str], InteractionApiClient] = InteractionApiClient,
+) -> None:
+    try:
+        result = _handle_robot_job(reachy_mini, job)
+        metadata = job.playback_metadata
+        playback_key = metadata.playback_key if metadata is not None else None
+        if playback_key and not result.ok:
+            failed_playback_keys.add(playback_key)
+
+        should_report = bool(
+            metadata
+            and metadata.playback_key
+            and metadata.run_id
+            and (job.report_playback_done or not result.ok)
+        )
+        if not should_report:
+            return
+
+        if (
+            result.ok
+            and job.report_playback_done
+            and playback_key in failed_playback_keys
+        ):
+            return
+
+        try:
+            _report_robot_job_playback_result(
+                client_factory(service_url),
+                job,
+                result,
+            )
+        except Exception as exc:
+            print(f"Robot playback status report failed: {exc}")
+    finally:
+        metadata = job.playback_metadata
+        playback_key = metadata.playback_key if metadata is not None else None
+        if job.report_playback_done and playback_key:
+            failed_playback_keys.discard(playback_key)
+        if job.done_event is not None:
+            job.done_event.set()
 
 
 def _default_settings() -> dict[str, Any]:

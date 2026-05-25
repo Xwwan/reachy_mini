@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import queue
+import threading
 
 from reachy_dialogue_app.reachy_dialogue_app.audio.playback import (
     PlaybackMetadata,
@@ -14,6 +15,7 @@ from reachy_dialogue_app.reachy_dialogue_app.audio.robot_output import (
     RobotJobResult,
     _report_robot_job_playback_result,
 )
+from reachy_dialogue_app.reachy_dialogue_app import main as dialogue_main
 
 
 class FakeInteractionClient:
@@ -152,3 +154,97 @@ def test_report_robot_job_playback_result_calls_error_for_failed_chunk() -> None
             "error": "speaker unavailable",
         }
     ]
+
+
+def test_process_robot_job_reports_done_and_sets_event(monkeypatch) -> None:
+    done_event = threading.Event()
+    client = FakeInteractionClient()
+    metadata = PlaybackMetadata(playback_key="pb_1", run_id="irun_1")
+    job = RobotJob(
+        done_event=done_event,
+        playback_metadata=metadata,
+        report_playback_done=True,
+    )
+
+    monkeypatch.setattr(
+        dialogue_main,
+        "_handle_robot_job",
+        lambda reachy_mini, job: RobotJobResult(ok=True),
+    )
+
+    dialogue_main._process_robot_job(
+        object(),  # type: ignore[arg-type]
+        job,
+        service_url="http://backend.test",
+        failed_playback_keys=set(),
+        client_factory=lambda service_url: client,  # type: ignore[arg-type]
+    )
+
+    assert client.done_calls == [{"run_id": "irun_1", "playback_key": "pb_1"}]
+    assert client.error_calls == []
+    assert done_event.is_set()
+
+
+def test_process_robot_job_reports_error_and_remembers_failed_group(monkeypatch) -> None:
+    client = FakeInteractionClient()
+    metadata = PlaybackMetadata(playback_key="pb_1", run_id="irun_1")
+    failed_playback_keys: set[str] = set()
+    job = RobotJob(playback_metadata=metadata)
+
+    monkeypatch.setattr(
+        dialogue_main,
+        "_handle_robot_job",
+        lambda reachy_mini, job: RobotJobResult(
+            ok=False,
+            error="speaker unavailable",
+        ),
+    )
+
+    dialogue_main._process_robot_job(
+        object(),  # type: ignore[arg-type]
+        job,
+        service_url="http://backend.test",
+        failed_playback_keys=failed_playback_keys,
+        client_factory=lambda service_url: client,  # type: ignore[arg-type]
+    )
+
+    assert client.done_calls == []
+    assert client.error_calls == [
+        {
+            "run_id": "irun_1",
+            "playback_key": "pb_1",
+            "error": "speaker unavailable",
+        }
+    ]
+    assert failed_playback_keys == {"pb_1"}
+
+
+def test_process_robot_job_skips_done_after_group_failure(monkeypatch) -> None:
+    done_event = threading.Event()
+    client = FakeInteractionClient()
+    metadata = PlaybackMetadata(playback_key="pb_1", run_id="irun_1")
+    failed_playback_keys = {"pb_1"}
+    job = RobotJob(
+        done_event=done_event,
+        playback_metadata=metadata,
+        report_playback_done=True,
+    )
+
+    monkeypatch.setattr(
+        dialogue_main,
+        "_handle_robot_job",
+        lambda reachy_mini, job: RobotJobResult(ok=True),
+    )
+
+    dialogue_main._process_robot_job(
+        object(),  # type: ignore[arg-type]
+        job,
+        service_url="http://backend.test",
+        failed_playback_keys=failed_playback_keys,
+        client_factory=lambda service_url: client,  # type: ignore[arg-type]
+    )
+
+    assert client.done_calls == []
+    assert client.error_calls == []
+    assert failed_playback_keys == set()
+    assert done_event.is_set()
