@@ -5,7 +5,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urljoin
 
 import numpy as np
@@ -22,6 +22,7 @@ from ..core.constants import (
     ROBOT_MIC_READY_TIMEOUT_SECONDS,
 )
 from ..core.http import _iter_sse_events, _json_or_error, _normalize_service_url
+from ..interaction import InteractionApiClient
 
 
 @dataclass
@@ -356,6 +357,220 @@ class LiveVoiceSession:
             error=None,
         )
         return data
+
+
+class InteractionLiveVoiceSession:
+    def __init__(
+        self,
+        *,
+        client: InteractionApiClient,
+        interaction_session_id: str,
+        workflow: str,
+        live_session_id: str,
+        sample_rate: int,
+    ) -> None:
+        self.client = client
+        self.interaction_session_id = interaction_session_id
+        self.workflow = workflow
+        self.live_session_id = live_session_id
+        self.session_id = live_session_id
+        self.sample_rate = sample_rate
+        self.queue: queue.Queue[bytes | None] = queue.Queue(maxsize=24)
+        self.lock = threading.Lock()
+        self.transcript = LiveTranscript(text="", is_final=False)
+        self.created_at = time.time()
+        self.queued_chunks = 0
+        self.queued_bytes = 0
+        self.posted_chunks = 0
+        self.posted_bytes = 0
+        self.accepted_bytes = 0
+        self.failed_chunks = 0
+        self.transcript_polls = 0
+        self.last_error: str | None = None
+        self.last_chunk_status: int | None = None
+        self.thread = threading.Thread(target=self._send_loop, daemon=True)
+        self.thread.start()
+
+    @classmethod
+    def start(
+        cls,
+        service_url: str,
+        *,
+        interaction_session_id: str,
+        workflow: str,
+        sample_rate: int,
+        client_factory: Callable[[str], InteractionApiClient] = InteractionApiClient,
+    ) -> "InteractionLiveVoiceSession":
+        client = client_factory(service_url)
+        data = client.live_start(
+            interaction_session_id=interaction_session_id,
+            workflow=workflow,  # type: ignore[arg-type]
+            sample_rate=sample_rate,
+            channels=1,
+            audio_format="pcm",
+        )
+        live_session_id = data.get("live_session_id") or data.get("session_id")
+        if not isinstance(live_session_id, str) or not live_session_id:
+            raise RuntimeError("Interaction live start did not return a live_session_id.")
+        return cls(
+            client=client,
+            interaction_session_id=interaction_session_id,
+            workflow=workflow,
+            live_session_id=live_session_id,
+            sample_rate=int(data.get("sample_rate") or sample_rate),
+        )
+
+    def submit_pcm(self, pcm: bytes) -> None:
+        if not pcm:
+            return
+        try:
+            self.queue.put_nowait(bytes(pcm))
+            with self.lock:
+                self.queued_chunks += 1
+                self.queued_bytes += len(pcm)
+        except queue.Full:
+            self._set_transcript(error="实时语音发送队列已满，部分音频被丢弃。")
+
+    def get_transcript(self) -> LiveTranscript:
+        if self.transcript.error:
+            return self.transcript
+        try:
+            with self.lock:
+                self.transcript_polls += 1
+            data = self.client.live_transcript(
+                interaction_session_id=self.interaction_session_id,
+                workflow=self.workflow,  # type: ignore[arg-type]
+                live_session_id=self.live_session_id,
+            )
+            self._set_transcript(
+                text=str(data.get("transcript") or ""),
+                is_final=bool(data.get("is_final")),
+                error=data.get("error"),
+            )
+        except Exception as exc:
+            self._set_transcript(error=f"读取实时字幕失败：{exc}")
+        with self.lock:
+            return self.transcript
+
+    def finish_stream(self, *, tts_enabled: bool):
+        self.queue.put(None)
+        self.thread.join(timeout=5)
+        for item in self.client.live_finish_stream(
+            interaction_session_id=self.interaction_session_id,
+            workflow=self.workflow,  # type: ignore[arg-type]
+            live_session_id=self.live_session_id,
+            tts_enabled=tts_enabled,
+        ):
+            data = item.data
+            if item.event == "transcript":
+                self._set_transcript(
+                    text=str(data.get("transcript") or ""),
+                    is_final=True,
+                    error=None,
+                )
+            elif item.event == "done":
+                self._set_transcript(
+                    text=str(data.get("transcript") or self.transcript.text),
+                    is_final=True,
+                    error=None,
+                )
+            yield {"event": item.event, "data": data}
+
+    def abort(self) -> None:
+        try:
+            self.queue.put_nowait(None)
+        except queue.Full:
+            pass
+        try:
+            self.client.live_abort(
+                interaction_session_id=self.interaction_session_id,
+                workflow=self.workflow,  # type: ignore[arg-type]
+                live_session_id=self.live_session_id,
+            )
+        except Exception:
+            pass
+
+    def debug_snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "session_id": self.session_id,
+                "live_session_id": self.live_session_id,
+                "interaction_session_id": self.interaction_session_id,
+                "workflow": self.workflow,
+                "sample_rate": self.sample_rate,
+                "age_seconds": round(time.time() - self.created_at, 2),
+                "queue_size": self.queue.qsize(),
+                "send_thread_alive": self.thread.is_alive(),
+                "queued_chunks": self.queued_chunks,
+                "queued_bytes": self.queued_bytes,
+                "posted_chunks": self.posted_chunks,
+                "posted_bytes": self.posted_bytes,
+                "accepted_bytes": self.accepted_bytes,
+                "failed_chunks": self.failed_chunks,
+                "transcript_polls": self.transcript_polls,
+                "transcript": self.transcript.text,
+                "is_final": self.transcript.is_final,
+                "last_error": self.last_error,
+                "last_chunk_status": self.last_chunk_status,
+            }
+
+    def _set_transcript(
+        self,
+        text: str | None = None,
+        *,
+        is_final: bool | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self.lock:
+            self.transcript = LiveTranscript(
+                text=self.transcript.text if text is None else text,
+                is_final=self.transcript.is_final if is_final is None else is_final,
+                error=error,
+            )
+            self.last_error = error
+
+    def _send_loop(self) -> None:
+        buffer = bytearray()
+        while True:
+            item = self.queue.get()
+            if item is None:
+                if buffer:
+                    self._post_chunk(bytes(buffer))
+                return
+            buffer.extend(item)
+            while len(buffer) >= LIVE_CHUNK_BYTES:
+                chunk = bytes(buffer[:LIVE_CHUNK_BYTES])
+                del buffer[:LIVE_CHUNK_BYTES]
+                if not self._post_chunk(chunk):
+                    break
+
+    def _post_chunk(self, chunk: bytes) -> bool:
+        try:
+            with self.lock:
+                self.posted_chunks += 1
+                self.posted_bytes += len(chunk)
+            data = self.client.live_chunk(
+                interaction_session_id=self.interaction_session_id,
+                workflow=self.workflow,  # type: ignore[arg-type]
+                live_session_id=self.live_session_id,
+                audio_base64=base64.b64encode(chunk).decode("ascii"),
+                is_final=False,
+            )
+            with self.lock:
+                self.last_chunk_status = 200
+            if not data.get("ok", False):
+                with self.lock:
+                    self.failed_chunks += 1
+                self._set_transcript(error="Interaction live service rejected audio.")
+                return False
+            with self.lock:
+                self.accepted_bytes += int(data.get("accepted_bytes") or 0)
+            return True
+        except Exception as exc:
+            with self.lock:
+                self.failed_chunks += 1
+            self._set_transcript(error=f"发送实时音频失败：{exc}")
+            return False
 
 
 class RobotMicRecorder:
