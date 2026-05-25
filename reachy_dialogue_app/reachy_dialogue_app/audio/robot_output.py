@@ -6,11 +6,20 @@ import tempfile
 import time
 import wave
 
+from dataclasses import dataclass
+
 from ..behavior import _play_action_signal
+from ..interaction import InteractionApiClient
 from .playback import RobotJob
 
 
-def _handle_robot_job(reachy_mini: ReachyMini, job: RobotJob) -> None:
+@dataclass(frozen=True)
+class RobotJobResult:
+    ok: bool
+    error: str | None = None
+
+
+def _handle_robot_job(reachy_mini: ReachyMini, job: RobotJob) -> RobotJobResult:
     wav_path = None
     playback_seconds = 0.0
     try:
@@ -28,14 +37,39 @@ def _handle_robot_job(reachy_mini: ReachyMini, job: RobotJob) -> None:
         if playback_seconds > 0:
             elapsed = time.monotonic() - started_at
             time.sleep(max(0.3, playback_seconds - elapsed + 0.3))
+        return RobotJobResult(ok=True)
     except Exception as exc:
-        print(f"Robot response failed: {exc}")
+        message = str(exc) or exc.__class__.__name__
+        print(f"Robot response failed: {message}")
+        return RobotJobResult(ok=False, error=message)
     finally:
         if wav_path is not None:
             try:
                 os.unlink(wav_path)
             except OSError:
                 pass
+
+
+def _report_robot_job_playback_result(
+    client: InteractionApiClient,
+    job: RobotJob,
+    result: RobotJobResult,
+) -> dict | None:
+    metadata = job.playback_metadata
+    if metadata is None or not metadata.playback_key or not metadata.run_id:
+        return None
+    if result.ok:
+        if not job.report_playback_done:
+            return None
+        return client.playback_done(
+            run_id=metadata.run_id,
+            playback_key=metadata.playback_key,
+        )
+    return client.playback_error(
+        run_id=metadata.run_id,
+        playback_key=metadata.playback_key,
+        error=result.error or "robot playback failed",
+    )
 
 
 def _write_pcm_wav(audio_bytes: bytes, sample_rate: int) -> str:
