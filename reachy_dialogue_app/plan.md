@@ -294,29 +294,29 @@ conda run -n toy python -m pytest tests/unit_tests/test_reachy_dialogue_streams.
 请在下面填写答案，或直接在聊天里回复：
 
 1. 默认 workflow 是 `chat` 还是 `onboarding`？
-   - 答案：
+   - 答案：onboarding 和 chat 可使用按钮进行切换
 
 2. 是否需要在第一版 UI 中完整支持 onboarding 阶段展示和字段收集，还是只先透传 `state_delta` 和 `done` 中的 onboarding 状态？
-   - 答案：
+   - 答案：完整支持 onboarding 阶段展示和字段收集
 
 3. 是否保留 follow-up 面板和 `/followups/*` 辅助功能？
-   - 答案：
+   - 答案：保留
 
 4. 是否保留 memory curate/profile refresh 调试按钮？
-   - 答案：
+   - 答案：是
 
 5. 自动语音的唤醒门禁是否继续保留？
-   - 答案：
+   - 答案：是
 
 6. 机器人播放完成后，是否必须等待 `/interaction/playback/done` 成功返回，才向前端发送本地 `playback_done`？
-   - 答案：
+   - 答案：是
 
 7. 新前端是否需要继续支持 web-only 模式，也就是没有真实 Reachy 时使用浏览器本地麦克风和本地音频播放调试？
-   - 答案：
+   - 答案：是
 
 8. 默认服务地址是否改成新后端实际地址？
    - 当前旧默认：`http://127.0.0.1:12312`
-   - 答案：
+   - 答案：是
 
 ## 备注
 

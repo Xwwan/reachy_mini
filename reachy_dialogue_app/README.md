@@ -5,7 +5,7 @@ colorFrom: red
 colorTo: blue
 sdk: static
 pinned: false
-short_description: Voice dialogue bridge for a local long-term-memory chat service.
+short_description: Interaction API voice dialogue bridge for Reachy Mini.
 tags:
  - reachy_mini
  - reachy_mini_python_app
@@ -13,153 +13,269 @@ tags:
 
 # Reachy Dialogue App
 
-这个 app 把 Reachy Mini 连接到本机已有的对话系统 `/home/tzhx/test-project`。
-
-默认工作方式：
-
-- 对话服务由用户手动启动。
-- 默认服务地址是 `http://127.0.0.1:12312`，也可以在 app 页面里修改。
-- App 使用机器人麦克风录音，转成 16kHz、16-bit、mono PCM 后通过对话服务的 `/voice/live/*` 实时语音接口分块发送。
-- 对话服务负责实时 STT、生成回复、长期记忆检索和 TTS；正式机器人麦克风停止录音时优先请求 `/voice/live/finish-stream`，通过 SSE 接收 `transcript` / `delta` / `audio` / `done` 事件，不再把整段音频发到 `/voice/chat` 做二次识别，也不走延迟测试接口。
-- 流式 TTS 会以多个 `audio` 事件返回 24kHz、16-bit、mono PCM chunk；app 会收集这些 chunk，合并后写成临时 WAV 并通过 `reachy_mini.media.play_sound()` 让机器人播放。
-- 如果服务端没有正式流式 finish 接口，app 会回退到 `/voice/live/finish` 的非流式 JSON 响应，包装成兼容的 SSE `transcript` / `delta` / `done` 事件，并继续播放返回的 TTS PCM；这个 fallback 仍走记忆检索链路。
-- 页面支持手动输入文本。文本会优先转发到对话服务的 `/chat/stream` 并透传 `meta` / `delta` / `done` SSE；如果服务端没有流式文本接口，会回退到 `/chat`，再把完整回复包装成兼容的 `delta` / `done`。返回里如果包含 `audio_base64`、`response_audio_base64` 或 `tts_audio_base64`，会继续由机器人扬声器播放。
-- 页面支持调整扬声器和麦克风音量。滑杆通过 Reachy daemon 的 `/api/volume/current`、`/api/volume/set`、`/api/volume/microphone/current`、`/api/volume/microphone/set` 代理读写，取值范围是 0-100。
-- Dialogue app 不直接控制机器人动作；它只从模型回复中解析行为标签并向表情/动作模块发送控制信号。
-- 页面里临时加入了“机器人麦克风回放测试”：录一段机器人麦克风输入，停止后不经过对话服务，直接从机器人扬声器播放原始录音，方便检查机器人麦克风和扬声器链路。
-- App 维护自己的 `reachy_dialogue_app/reachy_dialogue_app/behavior_config.yaml`，用于声明行为模块、可识别的 tag 名和触发 key；当模型回复里出现类似 `[emo:angry]`、`[act:开心]` 的标签时，会把 key 原样转发给对应模块。前端会保留原始标签显示。
-
-## 启动顺序
-
-先启动你的对话系统：
-
-```bash
-cd /home/tzhx/test-project
-/home/tzhx/miniconda3/bin/conda run -n test python -m src.main --host 127.0.0.1 --port 12312 --log-level DEBUG
-```
-
-如果要联动终端表情，另开一个终端启动 Reachy Emoji 服务：
-
-```bash
-cd /home/tzhx/wyl/reachy_mini/reachy_emoji
-/home/tzhx/miniconda3/bin/conda run -n test python main.py
-```
-
-默认表情服务地址是 `http://127.0.0.1:8001`。例如模型回复中包含 `[emo:angry]` 时，
-dialogue app 会发出：
+`reachy_dialogue_app` connects Reachy Mini to the new unified backend
+Interaction API documented in:
 
 ```text
-GET http://127.0.0.1:8001/angry
+/Users/xwan/code/test-project/docs/api_contracts.md
 ```
 
-动作当前使用本进程函数调用。模型回复中包含 `[act:开心]` 时，dialogue app 会把
-`开心` 作为 signal 传给 `action_call/play_emotion_action.py` 的可复用函数；具体映射由
-`action_call/config.json` 维护。
+The app is now a local Reachy Mini device bridge plus a browser workbench. It no
+longer falls back to the old `/chat`, `/chat/stream`, `/voice/chat`,
+`/voice/live/*`, `/followups/*`, or `/memory/*` backend routes.
 
-动作会复用 dialogue app 当前的 ReachyMini 连接，不需要额外启动 `8002` 动作服务。
+## Architecture
 
-然后启动 Reachy Mini app：
+The backend owns dialogue state and exposes the canonical Interaction API:
+
+- `POST /interaction/sessions`
+- `GET /interaction/sessions/{interaction_session_id}`
+- `GET /interaction/sessions/{interaction_session_id}/runs`
+- `GET /interaction/runs/{run_id}`
+- `POST /interaction/runs/text-stream`
+- `POST /interaction/live/start`
+- `POST /interaction/live/chunk`
+- `GET /interaction/live/transcript`
+- `POST /interaction/live/finish-transcript`
+- `POST /interaction/live/finish-stream`
+- `POST /interaction/live/abort`
+- `POST /interaction/playback/done`
+- `POST /interaction/playback/error`
+
+The local app provides a smaller `/api/*` surface for the browser and robot:
+
+- `POST /api/interaction/session`
+- `POST /api/interaction/text-stream`
+- `POST /api/interaction/live/start`
+- `POST /api/interaction/live/chunk`
+- `GET /api/interaction/live/transcript`
+- `POST /api/interaction/live/finish-stream`
+- `POST /api/interaction/live/abort`
+- `POST /api/robot-mic/start-interaction`
+- `POST /api/robot-mic/finish-interaction-stream`
+- `POST /api/auto-voice/start`
+- `POST /api/auto-voice/chunk`
+- `GET /api/auto-voice/events`
+- `GET /api/auto-voice/state`
+- `POST /api/auto-voice/stop`
+- settings, health, audio volume, robot mic level/debug, and robot mic playback test helpers
+
+The old local dialogue routes have been removed:
+
+- `/api/text-chat-stream`
+- `/api/voice-chat`
+- `/api/local-mic/*`
+- `/api/followups/*`
+- `/api/memory/*`
+- old `/api/robot-mic/start`, `/api/robot-mic/stop`, `/api/robot-mic/stop-stream`
+
+## Workflows
+
+Every Interaction session has a `workflow`:
+
+- `chat`: normal conversation and backend memory behavior.
+- `onboarding`: onboarding state machine. The local app only proxies state and does
+  not invent onboarding logic locally.
+
+The browser workbench can switch workflows before creating or using a session.
+Both text and voice inputs reuse the same Interaction session until the user
+creates a new one.
+
+## Text Interaction
+
+Text input follows this path:
+
+1. Browser calls `POST /api/interaction/session` if no session exists.
+2. Browser calls `POST /api/interaction/text-stream`.
+3. Local app proxies backend SSE events from `/interaction/runs/text-stream`.
+4. `audio` events are queued for robot speaker playback when running on a robot.
+5. After real playback finishes, the local app reports:
+   - `POST /interaction/playback/done`, or
+   - `POST /interaction/playback/error`
+
+The playback queue always prefers backend `playback_key`. `run_id`,
+`interaction_session_id`, and `workflow` are carried with playback metadata so
+the backend run can track final playback status.
+
+## Voice Interaction
+
+There are three voice modes in the current workbench:
+
+- Local microphone: browser captures audio and sends chunks through
+  `/api/interaction/live/*`.
+- Robot microphone: the local Python app captures Reachy Mini microphone audio
+  and sends chunks through `/interaction/live/*`.
+- Auto voice: local VAD detects utterances and uses the same Interaction live
+  APIs for each utterance.
+
+Normal "finish and answer" voice turns use:
+
+```text
+POST /interaction/live/finish-stream
+```
+
+Wake-gated auto voice uses:
+
+```text
+POST /interaction/live/finish-transcript
+```
+
+That endpoint ends ASR and returns final text only. It does not create an
+Interaction run, does not reply, does not advance onboarding, and does not
+generate TTS. This keeps wake phrases and exit phrases out of chat/onboarding
+history. Once the gate is awake, the real user utterance is sent as text through
+`/interaction/runs/text-stream`.
+
+## Behavior Tags
+
+The app still parses behavior tags from model replies and forwards them to local
+behavior modules:
+
+- `[emo:angry]`
+- `[act:开心]`
+
+Configuration lives in:
+
+```text
+reachy_dialogue_app/reachy_dialogue_app/behavior_config.yaml
+```
+
+Emoji behavior can call a local HTTP service. Action behavior uses in-process
+Reachy Mini control and shares the app's robot connection.
+
+## Start Backend
+
+Start your new backend separately. Example:
 
 ```bash
-cd /home/tzhx/wyl/reachy_mini/reachy_dialogue_app
-/home/tzhx/miniconda3/bin/conda run -n test python -m reachy_dialogue_app.main
+cd /Users/xwan/code/test-project
+conda run -n toy python -m src.main --host 127.0.0.1 --port 12312 --log-level DEBUG
 ```
 
-如果你使用 Wireless，且 `reachy-mini.local` 解析失败，请改用机器人 IP：
+The default service URL is:
+
+```text
+http://127.0.0.1:12312
+```
+
+You can also change it in the browser workbench or by setting:
 
 ```bash
-/home/tzhx/miniconda3/bin/conda run -n test python -m reachy_dialogue_app.main --robot-host <机器人IP>
+export REACHY_DIALOGUE_SERVICE_URL=http://127.0.0.1:12312
 ```
 
-如果你使用 Lite，先确认本机 daemon 已经启动，或者让 app 自动启动 daemon：
+## Start Reachy Dialogue App
+
+From this repository:
 
 ```bash
-/home/tzhx/miniconda3/bin/conda run -n test python -m reachy_dialogue_app.main --robot-host 127.0.0.1 --spawn-daemon
+cd /Users/xwan/code/reachy_mini
+conda run -n toy python -m reachy_dialogue_app.reachy_dialogue_app.main
 ```
 
-如果只是先用模拟环境验证界面和流程：
+For Lite with a local daemon:
 
 ```bash
-/home/tzhx/miniconda3/bin/conda run -n test python -m reachy_dialogue_app.main --robot-host 127.0.0.1 --spawn-daemon --use-sim
+conda run -n toy python -m reachy_dialogue_app.reachy_dialogue_app.main \
+  --robot-host 127.0.0.1 \
+  --spawn-daemon
 ```
 
-打开配置页：
+For Wireless, use the robot hostname or IP:
+
+```bash
+conda run -n toy python -m reachy_dialogue_app.reachy_dialogue_app.main \
+  --robot-host reachy-mini.local
+```
+
+For UI and backend testing without a robot:
+
+```bash
+REACHY_DIALOGUE_SERVICE_URL=http://127.0.0.1:12312 \
+conda run -n toy python -m reachy_dialogue_app.reachy_dialogue_app.main --web-only
+```
+
+Open:
 
 ```text
 http://127.0.0.1:8042/
 ```
 
-## Mac / 树莓派真实音频对比测试
+## Browser Workbench
 
-如果同一套 dialogue app 在 Mac 上播放顺畅、在树莓派上播放一卡一卡，优先测真实 dialogue SSE 链路。先分别在 Mac / 树莓派上启动 app 和对话服务，然后运行：
+The root page is the main workbench. It includes:
+
+- service URL and conversation ID settings
+- `chat` / `onboarding` workflow selector
+- Interaction session creation
+- streaming text input
+- local microphone live interaction
+- robot microphone live interaction
+- auto voice controls
+- current session/run/playback/live identifiers
+- raw SSE event log
+
+`web-only` mode hides robot-only controls and keeps local text, local mic, and
+auto local voice available.
+
+## Audio Probe
+
+`scripts/dialogue_stream_probe.py` measures the real local app SSE path and TTS
+audio chunk timing. It now uses the new Interaction routes:
+
+- `POST /api/interaction/session`
+- `POST /api/interaction/text-stream`
+
+Example:
 
 ```bash
-python reachy_dialogue_app/scripts/dialogue_stream_probe.py \
+conda run -n toy python reachy_dialogue_app/scripts/dialogue_stream_probe.py \
   --label mac \
   --app-url http://127.0.0.1:8042 \
   --output /tmp/reachy_dialogue_stream_mac.json \
   --save-audio /tmp/reachy_dialogue_stream_mac.wav
 ```
 
-树莓派上同样运行：
+Compare two probe outputs:
 
 ```bash
-python reachy_dialogue_app/scripts/dialogue_stream_probe.py \
-  --label raspberry-pi \
-  --app-url http://127.0.0.1:8042 \
-  --output /tmp/reachy_dialogue_stream_pi.json \
-  --save-audio /tmp/reachy_dialogue_stream_pi.wav
-```
-
-对比：
-
-```bash
-python reachy_dialogue_app/scripts/dialogue_stream_probe.py \
+conda run -n toy python reachy_dialogue_app/scripts/dialogue_stream_probe.py \
   --compare /tmp/reachy_dialogue_stream_mac.json /tmp/reachy_dialogue_stream_pi.json
 ```
 
-这个 probe 会走真实 `/api/text-chat-stream`，测真实 TTS audio 事件的到达时间、真实音频 chunk 时长，并可把收到的真实 PCM 保存成 WAV。重点看 `interarrival p95 ms`、`chunk duration mean ms`、`starvation total ms`。如果 audio 事件到达间隔经常大于上一段音频本身的时长，浏览器或机器人播放器就会断粮，听起来就是一卡一卡。
+Useful fields:
 
-## 不连接机器人：web-only 文字输入和本机麦克风测试
+- `first_audio_ms`
+- `audio_interarrival_ms`
+- `audio_chunk_duration_ms`
+- `starvation_ms_total`
+- `final_backlog_ms`
 
-如果只想验证文字对话、本机电脑麦克风、实时 STT、流式文本回复和流式 TTS 播放，
-不需要启动 Reachy daemon，也不需要连接机器人：
+## Tests
+
+Run the Reachy Dialogue test set:
 
 ```bash
-cd /Users/xwan/code/reachy_mini/reachy_dialogue_app
-REACHY_DIALOGUE_SERVICE_URL=http://127.0.0.1:12312 \
-conda run -n toy python -m reachy_dialogue_app.main --web-only
+conda run -n toy python -m pytest tests/unit_tests/test_reachy_dialogue*.py
 ```
 
-然后打开：
+Run the browser mock directly:
 
-```text
-http://127.0.0.1:8042/
+```bash
+node tests/unit_tests/dialogue_stream_mock_test.js
 ```
 
-web-only 根页面会打开普通对话页，但隐藏机器人麦克风、机器人音量和机器人回放测试控件。
-其中“手动输入”会调用本地 app 的 `/api/text-chat-stream`，再优先转发到对话服务
-`/chat/stream`；如果后端启用长期记忆检索，web-only 文字输入也会透传
-`retrieval_status`、`retrieved_memory_ids` 等返回字段。
+The current tests cover:
 
-本机麦克风测试页使用浏览器 `getUserMedia()` 读取本机麦克风，把音频降采样为
-16kHz、16-bit、mono PCM，通过本地 app 代理发送到对话服务的 `/voice/live/*`
-接口，停止录音后用 SSE 接收 `transcript` / `delta` / `audio` / `done`。
-TTS `audio` chunk 会直接用浏览器扬声器播放。
+- Interaction client request shapes
+- text stream proxying
+- live voice start/chunk/transcript/finish/abort
+- `finish-transcript` for auto voice wake gate
+- playback metadata and playback done/error reporting
+- new frontend route usage
+- removal of old local dialogue routes
 
-本机麦克风测试页的 `/api/local-mic/finish-stream` 仍会请求
-`/tools/voice-latency/finish-stream`，用于端到端延迟测试；正式机器人语音的
-`/api/robot-mic/stop-stream` 使用 `/voice/live/finish-stream`，404 时才 fallback 到
-`/voice/live/finish`。
-
-如果你已经用普通机器人 app 启动了页面，也可以从机器人页面点击“本机麦克风测试”，
-或直接打开：
-
-```text
-http://127.0.0.1:8042/static/local-mic-test.html
-```
-
-## 可选环境变量
+## Environment Variables
 
 ```bash
 export REACHY_DIALOGUE_SERVICE_URL=http://127.0.0.1:12312
@@ -177,3 +293,12 @@ export REACHY_DIALOGUE_BEHAVIOR_ENABLED=true
 export REACHY_DIALOGUE_EMOJI_ENABLED=true
 export REACHY_DIALOGUE_EMOJI_SERVICE_URL=http://127.0.0.1:8001
 ```
+
+## Notes
+
+- The app intentionally does not call legacy backend routes.
+- The deleted `local-mic-test.html` flow has been replaced by the main
+  workbench's local microphone Interaction flow.
+- Follow-up and memory behavior are now backend concerns surfaced through
+  Interaction events and run state, not local `/api/followups/*` or
+  `/api/memory/*` helpers.

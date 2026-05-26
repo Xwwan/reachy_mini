@@ -20,6 +20,7 @@ import requests
 DEFAULT_APP_URL = "http://127.0.0.1:8042"
 DEFAULT_TEXT = "请用一句话回答：今天适合和 Reachy Mini 聊些什么？"
 DEFAULT_CONVERSATION_ID = "stream-probe"
+DEFAULT_WORKFLOW = "chat"
 
 
 def main() -> None:
@@ -33,6 +34,7 @@ def main() -> None:
     parser.add_argument("--app-url", default=DEFAULT_APP_URL)
     parser.add_argument("--service-url", default=None)
     parser.add_argument("--conversation-id", default=DEFAULT_CONVERSATION_ID)
+    parser.add_argument("--workflow", choices=("chat", "onboarding"), default=DEFAULT_WORKFLOW)
     parser.add_argument("--text", default=DEFAULT_TEXT)
     parser.add_argument("--no-tts", action="store_true")
     parser.add_argument("--timeout", type=float, default=180.0)
@@ -62,6 +64,7 @@ def main() -> None:
         app_url=args.app_url,
         service_url=args.service_url,
         conversation_id=args.conversation_id,
+        workflow=args.workflow,
         text=args.text,
         tts_enabled=not args.no_tts,
         timeout=args.timeout,
@@ -79,6 +82,7 @@ def run_probe(
     app_url: str,
     service_url: str | None,
     conversation_id: str,
+    workflow: str,
     text: str,
     tts_enabled: bool,
     timeout: float,
@@ -97,14 +101,29 @@ def run_probe(
         )
         settings_response.raise_for_status()
 
+    session_response = requests.post(
+        urljoin(app_url, "api/interaction/session"),
+        json={
+            "workflow": workflow,
+            "conversation_id": conversation_id,
+            "input_mode": "text",
+            "tts_enabled": tts_enabled,
+        },
+        timeout=10,
+    )
+    session_response.raise_for_status()
+    session_payload = session_response.json()
+    interaction_session_id = session_payload["interaction_session_id"]
+
     payload = {
-        "text": text,
-        "conversation_id": conversation_id,
+        "interaction_session_id": interaction_session_id,
+        "workflow": workflow,
+        "message": text,
         "tts_enabled": tts_enabled,
     }
     started = time.perf_counter()
     response = requests.post(
-        urljoin(app_url, "api/text-chat-stream"),
+        urljoin(app_url, "api/interaction/text-stream"),
         json=payload,
         stream=True,
         timeout=(10, timeout),
@@ -143,6 +162,8 @@ def run_probe(
             "app_url": app_url,
             "service_url": service_url,
             "conversation_id": conversation_id,
+            "workflow": workflow,
+            "interaction_session_id": interaction_session_id,
             "text": text,
             "tts_enabled": tts_enabled,
             "timeout": timeout,
