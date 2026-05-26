@@ -456,6 +456,10 @@ async function main() {
             await api.refreshProfile();
             assert.ok(api.els.memoryResult.textContent.includes("should_update"));
 
+            api.els.ttsEnabled.checked = false;
+            api.startDefaultFollowupStream();
+            assert.equal(api.els.ttsEnabled.checked, true);
+
             api.handleStreamEvent("state_delta", {
                 workflow: "onboarding",
                 onboarding_session_id: "onb_1",

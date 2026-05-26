@@ -701,6 +701,13 @@ function toggleFollowupStream() {
     setStatus("已订阅二次回复");
 }
 
+function startDefaultFollowupStream() {
+    if (state.followupEventSource) return;
+    els.ttsEnabled.checked = true;
+    if (typeof EventSource !== "function") return;
+    toggleFollowupStream();
+}
+
 function closeFollowupStream() {
     if (state.followupEventSource) {
         state.followupEventSource.close();
@@ -1236,6 +1243,7 @@ async function initialize() {
     renderFollowups();
     renderOnboarding();
     await loadSettings();
+    startDefaultFollowupStream();
     await checkHealth().catch(() => {});
 }
 
@@ -1256,6 +1264,7 @@ window.__reachyDialogue = {
     refreshFollowups,
     runPendingFollowups,
     toggleFollowupStream,
+    startDefaultFollowupStream,
     closeFollowupStream,
     runMemoryCurate,
     refreshProfile,

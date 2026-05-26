@@ -222,6 +222,7 @@ The root page is the main workbench. It includes:
 - current session/run/playback/live identifiers
 - session/run debug refresh, including playback status and run errors
 - onboarding stage, collected fields, and missing required slots
+- follow-up stream is subscribed by default with TTS enabled
 - follow-up and memory controls
 - raw SSE event log
 
