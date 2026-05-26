@@ -290,8 +290,8 @@ The current tests cover:
 
 ## Code Layout
 
-- `reachy_dialogue_app/main.py`: app startup, Reachy Mini wiring, robot microphone
-  routes, robot audio volume, and web-only assembly.
+- `reachy_dialogue_app/main.py`: app startup, Reachy Mini wiring, playback job
+  processing, and web-only assembly.
 - `reachy_dialogue_app/api/payloads.py`: FastAPI request models.
 - `reachy_dialogue_app/api/common.py`: shared route validation and settings helpers.
 - `reachy_dialogue_app/api/settings_routes.py`: settings, health, emoji config, and
@@ -301,6 +301,8 @@ The current tests cover:
 - `reachy_dialogue_app/api/followup_memory_routes.py`: follow-up and memory helper
   routes.
 - `reachy_dialogue_app/api/auto_voice_routes.py`: auto voice route registration.
+- `reachy_dialogue_app/api/robot_routes.py`: robot-only routes for audio volume,
+  robot microphone interaction, microphone level/debug, and playback tests.
 
 ## Environment Variables
 

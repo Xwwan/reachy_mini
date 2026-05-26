@@ -80,6 +80,27 @@ def _wait_for_robot_audio_sample(reachy_mini: ReachyMini) -> np.ndarray | None:
     return None
 
 
+def _robot_sample_to_mono(sample: np.ndarray) -> np.ndarray:
+    audio = np.asarray(sample, dtype=np.float32)
+    if audio.ndim == 0:
+        return audio.reshape(1)
+    if audio.ndim == 1:
+        return audio
+    if audio.ndim == 2:
+        if audio.shape[1] <= 8:
+            return audio.mean(axis=1)
+        if audio.shape[0] <= 8:
+            return audio.mean(axis=0)
+        return audio.mean(axis=1)
+    return audio.reshape(-1)
+
+
+def _robot_samples_to_mono(samples: list[np.ndarray]) -> np.ndarray:
+    # Keep the capture flow aligned with examples/sound_record.py: collect raw
+    # samples from get_audio_sample(), then concatenate the recorded frames.
+    return np.concatenate([_robot_sample_to_mono(sample) for sample in samples], axis=0)
+
+
 class InteractionLiveVoiceSession:
     def __init__(
         self,
@@ -446,10 +467,7 @@ class RobotMicRecorder:
                 self.live_session = None
             raise RuntimeError("没有捕获到机器人麦克风音频。")
 
-        audio = np.concatenate(samples, axis=0)
-        if audio.ndim == 2:
-            audio = audio.mean(axis=1)
-        pcm = np.clip(audio, -1.0, 1.0)
+        pcm = np.clip(_robot_samples_to_mono(samples), -1.0, 1.0)
         duration_seconds = float(pcm.shape[0] / sample_rate)
         rms = float(np.sqrt(np.mean(np.square(pcm, dtype=np.float64))))
         peak = float(np.max(np.abs(pcm)))
@@ -545,9 +563,7 @@ class RobotMicRecorder:
                 time.sleep(ROBOT_MIC_POLL_SECONDS)
 
     def _capture_sample(self, sample: np.ndarray) -> None:
-        mono = sample
-        if mono.ndim == 2:
-            mono = mono.mean(axis=1)
+        mono = _robot_sample_to_mono(sample)
         mono = np.clip(mono, -1.0, 1.0)
         rms = float(np.sqrt(np.mean(np.square(mono, dtype=np.float64))))
         peak = float(np.max(np.abs(mono)))
@@ -662,10 +678,7 @@ class RobotMicPlaybackTester:
         if not samples:
             raise RuntimeError("没有捕获到机器人麦克风音频。")
 
-        audio = np.concatenate(samples, axis=0)
-        if audio.ndim == 2:
-            audio = audio.mean(axis=1)
-        pcm = np.clip(audio, -1.0, 1.0)
+        pcm = np.clip(_robot_samples_to_mono(samples), -1.0, 1.0)
         duration_seconds = float(pcm.shape[0] / sample_rate)
         rms = float(np.sqrt(np.mean(np.square(pcm, dtype=np.float64))))
         peak = float(np.max(np.abs(pcm)))
@@ -722,9 +735,7 @@ class RobotMicPlaybackTester:
                 time.sleep(ROBOT_MIC_POLL_SECONDS)
 
     def _capture_sample(self, sample: np.ndarray) -> None:
-        mono = sample
-        if mono.ndim == 2:
-            mono = mono.mean(axis=1)
+        mono = _robot_sample_to_mono(sample)
         mono = np.clip(mono, -1.0, 1.0)
         rms = float(np.sqrt(np.mean(np.square(mono, dtype=np.float64))))
         peak = float(np.max(np.abs(mono)))

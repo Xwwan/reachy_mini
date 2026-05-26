@@ -7,6 +7,8 @@ import numpy as np
 from reachy_dialogue_app.reachy_dialogue_app.audio.robot_mic import (
     InteractionLiveVoiceSession,
     RobotMicRecorder,
+    _robot_sample_to_mono,
+    _robot_samples_to_mono,
 )
 from reachy_dialogue_app.reachy_dialogue_app.interaction import SseEvent
 
@@ -167,6 +169,49 @@ class FakeMedia:
 class FakeReachy:
     def __init__(self) -> None:
         self.media = FakeMedia()
+
+
+def test_robot_mic_sample_to_mono_matches_frames_first_robot_audio() -> None:
+    sample = np.array(
+        [
+            [0.2, 0.4],
+            [0.4, 0.6],
+            [0.6, 0.8],
+        ],
+        dtype=np.float32,
+    )
+
+    mono = _robot_sample_to_mono(sample)
+
+    assert np.allclose(mono, np.array([0.3, 0.5, 0.7], dtype=np.float32))
+
+
+def test_robot_mic_sample_to_mono_handles_channels_first_audio() -> None:
+    sample = np.array(
+        [
+            [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    mono = _robot_sample_to_mono(sample)
+
+    assert np.allclose(
+        mono,
+        np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], dtype=np.float32),
+    )
+
+
+def test_robot_mic_samples_to_mono_preserves_sample_order() -> None:
+    samples = [
+        np.array([[0.2, 0.4], [0.4, 0.6]], dtype=np.float32),
+        np.array([[0.6, 0.8]], dtype=np.float32),
+    ]
+
+    mono = _robot_samples_to_mono(samples)
+
+    assert np.allclose(mono, np.array([0.3, 0.5, 0.7], dtype=np.float32))
 
 
 def test_interaction_live_voice_start_uses_interaction_live_start() -> None:
