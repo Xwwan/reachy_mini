@@ -288,6 +288,20 @@ The current tests cover:
 - new frontend route usage
 - removal of old local dialogue routes
 
+## Code Layout
+
+- `reachy_dialogue_app/main.py`: app startup, Reachy Mini wiring, robot microphone
+  routes, robot audio volume, and web-only assembly.
+- `reachy_dialogue_app/api/payloads.py`: FastAPI request models.
+- `reachy_dialogue_app/api/common.py`: shared route validation and settings helpers.
+- `reachy_dialogue_app/api/settings_routes.py`: settings, health, emoji config, and
+  behavior config routes.
+- `reachy_dialogue_app/api/interaction_routes.py`: Interaction session, text, and
+  live voice proxy routes.
+- `reachy_dialogue_app/api/followup_memory_routes.py`: follow-up and memory helper
+  routes.
+- `reachy_dialogue_app/api/auto_voice_routes.py`: auto voice route registration.
+
 ## Environment Variables
 
 ```bash
