@@ -186,6 +186,96 @@ def test_live_finish_transcript_posts_to_interaction_endpoint() -> None:
     ]
 
 
+def test_followup_and_memory_client_methods_use_contract_routes() -> None:
+    response = FakeResponse(
+        payload={
+            "pending": [
+                {
+                    "request_id": "req_1",
+                    "conversation_id": "conv",
+                    "status": "retrieval_completed",
+                }
+            ]
+        }
+    )
+    session = FakeSession(response)
+    client = InteractionApiClient(
+        "http://backend.test/",
+        session=session,  # type: ignore[arg-type]
+    )
+
+    pending = client.list_pending_followups()
+    run_result = client.run_followup("req_1")
+    curate_result = client.memory_curate(conversation_id="conv", history_limit=25)
+    profile_result = client.memory_profile_refresh()
+
+    assert pending["pending"][0]["request_id"] == "req_1"
+    assert run_result == response.payload
+    assert curate_result == response.payload
+    assert profile_result == response.payload
+    assert session.calls == [
+        (
+            "GET",
+            "http://backend.test/followups/pending",
+            {"timeout": 10.0},
+        ),
+        (
+            "POST",
+            "http://backend.test/followups/req_1/run",
+            {"json": {}, "timeout": (10.0, 120.0)},
+        ),
+        (
+            "POST",
+            "http://backend.test/memory/curate",
+            {
+                "json": {"conversation_id": "conv", "history_limit": 25},
+                "timeout": (10.0, 120.0),
+            },
+        ),
+        (
+            "POST",
+            "http://backend.test/memory/profile/refresh",
+            {"json": {}, "timeout": (10.0, 120.0)},
+        ),
+    ]
+
+
+def test_followup_stream_client_uses_sse_contract() -> None:
+    response = FakeResponse(
+        lines=[
+            "event: followup",
+            'data: {"request_id":"req_1","reply":"补充一句"}',
+            "",
+        ]
+    )
+    session = FakeSession(response)
+    client = InteractionApiClient(
+        "http://backend.test/",
+        session=session,  # type: ignore[arg-type]
+    )
+
+    events = list(
+        client.followup_stream(
+            conversation_id="conv",
+            tts_enabled=True,
+        )
+    )
+
+    assert events == [SseEvent("followup", {"request_id": "req_1", "reply": "补充一句"})]
+    assert session.calls == [
+        (
+            "GET",
+            "http://backend.test/followups/stream",
+            {
+                "params": {"conversation_id": "conv", "tts_enabled": True},
+                "stream": True,
+                "timeout": (10.0, 120.0),
+            },
+        )
+    ]
+    assert response.closed is True
+
+
 def test_json_or_error_uses_contract_error_message() -> None:
     response = FakeResponse(
         ok=False,
@@ -484,14 +574,101 @@ def test_interaction_live_finish_stream_route_proxies_events() -> None:
     ]
 
 
+def test_followup_memory_routes_proxy_backend_contracts() -> None:
+    fake_client = FakeInteractionRouteClient(
+        followup_events=[
+            SseEvent(
+                "followup",
+                {
+                    "conversation_id": "conv",
+                    "request_id": "req_1",
+                    "followup_turn_id": "turn_f1",
+                    "followup_type": "supplement",
+                    "reply": "补充一句",
+                },
+            ),
+            SseEvent(
+                "audio",
+                {
+                    "conversation_id": "conv",
+                    "request_id": "req_1",
+                    "followup_turn_id": "turn_f1",
+                    "turn_id": "turn_f1",
+                    "audio_base64": "AAAA",
+                    "sample_rate": 24000,
+                    "chunk_index": 0,
+                },
+            ),
+            SseEvent(
+                "followup_done",
+                {
+                    "conversation_id": "conv",
+                    "request_id": "req_1",
+                    "followup_turn_id": "turn_f1",
+                    "turn_id": "turn_f1",
+                },
+            ),
+        ],
+    )
+    app = FastAPI()
+    settings = {
+        "service_url": "http://backend.test",
+        "conversation_id": "conv",
+        "tts_sample_rate": 24000,
+    }
+    dialogue_main._register_followup_memory_routes(
+        app,
+        settings,
+        dialogue_main.threading.Lock(),
+        behavior_config={"enabled": False},
+        client_factory=lambda service_url: fake_client,  # type: ignore[arg-type]
+    )
+    client = TestClient(app)
+
+    pending_response = client.get("/api/followups/pending")
+    run_response = client.post("/api/followups/req_1/run")
+    stream_response = client.get(
+        "/api/followups/stream",
+        params={"conversation_id": "conv", "tts_enabled": "true"},
+    )
+    curate_response = client.post(
+        "/api/memory/curate",
+        json={"conversation_id": "conv", "history_limit": 25},
+    )
+    profile_response = client.post("/api/memory/profile/refresh")
+
+    assert pending_response.status_code == 200
+    assert pending_response.json()["pending"][0]["request_id"] == "req_1"
+    assert run_response.status_code == 200
+    assert run_response.json()["decision"] == "followup"
+    assert stream_response.status_code == 200
+    assert "event: followup" in stream_response.text
+    assert "event: audio" in stream_response.text
+    assert "event: followup_done" in stream_response.text
+    assert "event: playback_done" in stream_response.text
+    assert '"skipped": true' in stream_response.text
+    assert curate_response.status_code == 200
+    assert curate_response.json()["conversation_id"] == "conv"
+    assert profile_response.status_code == 200
+    assert profile_response.json()["should_update"] is False
+    assert fake_client.followup_stream_calls == [
+        {"conversation_id": "conv", "tts_enabled": True}
+    ]
+    assert fake_client.memory_curate_calls == [
+        {"conversation_id": "conv", "history_limit": 25}
+    ]
+
+
 class FakeInteractionRouteClient:
     def __init__(
         self,
         text_events: list[SseEvent] | None = None,
         live_events: list[SseEvent] | None = None,
+        followup_events: list[SseEvent] | None = None,
     ) -> None:
         self.text_events = text_events or []
         self.live_events = live_events or []
+        self.followup_events = followup_events or []
         self.create_session_calls: list[dict] = []
         self.text_stream_calls: list[dict] = []
         self.live_start_calls: list[dict] = []
@@ -499,6 +676,8 @@ class FakeInteractionRouteClient:
         self.live_transcript_calls: list[dict] = []
         self.live_finish_stream_calls: list[dict] = []
         self.live_abort_calls: list[dict] = []
+        self.followup_stream_calls: list[dict] = []
+        self.memory_curate_calls: list[dict] = []
 
     def create_session(
         self,
@@ -646,3 +825,63 @@ class FakeInteractionRouteClient:
             }
         )
         return {"ok": True}
+
+    def list_pending_followups(self) -> dict:
+        return {
+            "pending": [
+                {
+                    "request_id": "req_1",
+                    "conversation_id": "conv",
+                    "status": "retrieval_completed",
+                }
+            ]
+        }
+
+    def run_followup(self, request_id: str) -> dict:
+        return {
+            "request_id": request_id,
+            "conversation_id": "conv",
+            "decision": "followup",
+            "followup_type": "supplement",
+            "reply": "补充一句",
+        }
+
+    def followup_stream(
+        self,
+        *,
+        conversation_id: str,
+        tts_enabled: bool,
+    ):
+        self.followup_stream_calls.append(
+            {
+                "conversation_id": conversation_id,
+                "tts_enabled": tts_enabled,
+            }
+        )
+        yield from self.followup_events
+
+    def memory_curate(
+        self,
+        *,
+        conversation_id: str,
+        history_limit: int,
+    ) -> dict:
+        self.memory_curate_calls.append(
+            {
+                "conversation_id": conversation_id,
+                "history_limit": history_limit,
+            }
+        )
+        return {
+            "conversation_id": conversation_id,
+            "operations": [],
+            "applied": [],
+        }
+
+    def memory_profile_refresh(self) -> dict:
+        return {
+            "should_update": False,
+            "patch": None,
+            "reason": "no change",
+            "new_profile": None,
+        }

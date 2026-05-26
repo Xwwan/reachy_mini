@@ -26,17 +26,21 @@ def test_frontend_targets_interaction_routes() -> None:
     assert "/api/robot-mic/start-interaction" in main_js
     assert "/api/auto-voice/start" in main_js
     assert "/api/auto-voice/chunk" in main_js
+    assert "/api/followups/stream" in main_js
+    assert "/api/memory/curate" in main_js
     assert "/api/text-chat-stream" not in main_js
-    assert "/api/followups/stream" not in main_js
 
 
 def test_legacy_dialogue_routes_are_not_registered() -> None:
     from reachy_dialogue_app.reachy_dialogue_app import main as dialogue_main
 
-    client = TestClient(dialogue_main._build_web_only_app())
+    app = dialogue_main._build_web_only_app()
+    client = TestClient(app)
+    route_paths = {getattr(route, "path", "") for route in app.routes}
 
     assert client.post("/api/text-chat-stream", json={}).status_code == 404
     assert client.post("/api/voice-chat", json={}).status_code == 404
     assert client.post("/api/local-mic/start").status_code == 404
-    assert client.get("/api/followups/pending").status_code == 404
-    assert client.post("/api/memory/curate", json={}).status_code == 404
+    assert "/api/followups/pending" in route_paths
+    assert "/api/followups/stream" in route_paths
+    assert "/api/memory/curate" in route_paths

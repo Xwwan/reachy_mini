@@ -11,6 +11,16 @@ const state = {
     activeLiveSessionId: "",
     activeLiveMode: "",
     runStatusText: "idle",
+    onboarding: {
+        onboarding_session_id: "",
+        stage: null,
+        stage_key: "",
+        stage_name: "",
+        status: "idle",
+        onboarding_complete: false,
+        collected: {},
+        missing_required_slots: [],
+    },
     localStream: null,
     audioContext: null,
     sourceNode: null,
@@ -29,6 +39,9 @@ const state = {
     autoPendingBytes: new Uint8Array(0),
     autoSendQueue: [],
     autoSendLoopRunning: false,
+    followupPending: [],
+    followupEventSource: null,
+    followupStreaming: false,
     messages: [],
     eventLog: [],
 };
@@ -64,6 +77,19 @@ const els = {
     runId: document.getElementById("run-id"),
     playbackKey: document.getElementById("playback-key"),
     liveSessionId: document.getElementById("live-session-id"),
+    onboardingStatus: document.getElementById("onboarding-status"),
+    onboardingSessionId: document.getElementById("onboarding-session-id"),
+    onboardingStage: document.getElementById("onboarding-stage"),
+    onboardingCollected: document.getElementById("onboarding-collected"),
+    onboardingMissing: document.getElementById("onboarding-missing"),
+    followupState: document.getElementById("followup-state"),
+    refreshFollowupsBtn: document.getElementById("refresh-followups-btn"),
+    runFollowupsBtn: document.getElementById("run-followups-btn"),
+    followupStreamBtn: document.getElementById("followup-stream-btn"),
+    followupPending: document.getElementById("followup-pending"),
+    memoryCurateBtn: document.getElementById("memory-curate-btn"),
+    profileRefreshBtn: document.getElementById("profile-refresh-btn"),
+    memoryResult: document.getElementById("memory-result"),
     eventLog: document.getElementById("event-log"),
     clearEventsBtn: document.getElementById("clear-events-btn"),
     connectionStatus: document.getElementById("connection-status"),
@@ -151,8 +177,10 @@ async function createInteractionSession(inputMode = "text") {
     state.interactionSessionId = payload.interaction_session_id;
     state.workflow = payload.workflow || workflow;
     state.runStatusText = "session";
+    updateOnboardingState(payload);
     appendEvent("session", payload);
     renderStatus();
+    renderOnboarding();
     setStatus("session 已创建");
     return payload;
 }
@@ -514,6 +542,136 @@ function setAutoVoiceUi(active, label) {
         : "等待启动";
 }
 
+async function refreshFollowups() {
+    const response = await fetch("/api/followups/pending");
+    const payload = await response.json();
+    if (!response.ok) {
+        throw new Error(payload.detail || "刷新 follow-up 失败");
+    }
+    state.followupPending = Array.isArray(payload.pending) ? payload.pending : [];
+    appendEvent("followups_pending", payload);
+    renderFollowups();
+    setStatus(`pending follow-up ${state.followupPending.length} 条`);
+    return state.followupPending;
+}
+
+async function runPendingFollowups() {
+    const pending = state.followupPending.length
+        ? state.followupPending
+        : await refreshFollowups();
+    const conversationId = els.conversationId.value || state.settings.conversation_id;
+    const candidates = pending.filter((item) => !item.conversation_id || item.conversation_id === conversationId);
+    if (!candidates.length) {
+        setStatus("当前 conversation 没有可运行的 follow-up");
+        return [];
+    }
+    const results = [];
+    for (const item of candidates) {
+        const requestId = item.request_id;
+        if (!requestId) continue;
+        const response = await fetch(`/api/followups/${encodeURIComponent(requestId)}/run`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+        });
+        const payload = await response.json();
+        appendEvent("followup_run", payload);
+        if (!response.ok) {
+            addMessage("error", payload.detail || `follow-up ${requestId} 失败`, "done");
+            continue;
+        }
+        results.push(payload);
+        if (!state.followupStreaming && payload.decision === "followup" && payload.reply) {
+            addMessage("followup", payload.reply, "done");
+        }
+    }
+    await refreshFollowups().catch(() => {});
+    renderTimeline();
+    setStatus(`运行 follow-up ${results.length} 条`);
+    return results;
+}
+
+function toggleFollowupStream() {
+    if (state.followupEventSource) {
+        closeFollowupStream();
+        return;
+    }
+    if (typeof EventSource !== "function") {
+        setStatus("当前浏览器不支持 EventSource");
+        return;
+    }
+    const conversationId = els.conversationId.value || state.settings.conversation_id || "reachy-mini-voice";
+    const params = new URLSearchParams({
+        conversation_id: conversationId,
+        tts_enabled: String(Boolean(els.ttsEnabled.checked)),
+    });
+    const source = new EventSource(`/api/followups/stream?${params}`);
+    state.followupEventSource = source;
+    state.followupStreaming = true;
+    els.followupStreamBtn.textContent = "停止订阅";
+    els.followupState.textContent = "streaming";
+    for (const eventName of [
+        "followup",
+        "audio",
+        "followup_done",
+        "playback_done",
+        "behavior",
+        "ping",
+        "error",
+    ]) {
+        source.addEventListener(eventName, (event) => {
+            handleStreamEvent(eventName, parseEventSourcePayload(event.data), {
+                source: "followup",
+            });
+        });
+    }
+    source.onerror = () => {
+        els.followupState.textContent = "disconnected";
+    };
+    setStatus("已订阅二次回复");
+}
+
+function closeFollowupStream() {
+    if (state.followupEventSource) {
+        state.followupEventSource.close();
+        state.followupEventSource = null;
+    }
+    state.followupStreaming = false;
+    els.followupStreamBtn.textContent = "订阅二次回复";
+    els.followupState.textContent = "idle";
+}
+
+async function runMemoryCurate() {
+    const response = await fetch("/api/memory/curate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            conversation_id: els.conversationId.value || "reachy-mini-voice",
+            history_limit: 50,
+        }),
+    });
+    const payload = await response.json();
+    appendEvent("memory_curate", payload);
+    els.memoryResult.textContent = JSON.stringify(payload, null, 2);
+    if (!response.ok) throw new Error(payload.detail || "整理记忆失败");
+    setStatus("记忆整理完成");
+    return payload;
+}
+
+async function refreshProfile() {
+    const response = await fetch("/api/memory/profile/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+    });
+    const payload = await response.json();
+    appendEvent("profile_refresh", payload);
+    els.memoryResult.textContent = JSON.stringify(payload, null, 2);
+    if (!response.ok) throw new Error(payload.detail || "刷新画像失败");
+    setStatus(payload.should_update ? "用户画像已更新" : "用户画像无需更新");
+    return payload;
+}
+
 async function stopLocalCapture() {
     if (state.processorNode) state.processorNode.disconnect();
     if (state.sourceNode) state.sourceNode.disconnect();
@@ -680,6 +838,7 @@ function handleStreamEvent(event, data, context = {}) {
         state.activePlaybackKey = playbackKeyFromPayload(data) || "";
     }
     if (data.live_session_id) state.activeLiveSessionId = data.live_session_id;
+    updateOnboardingState(data);
     if (event === "meta") {
         state.runStatusText = "streaming";
     }
@@ -694,16 +853,29 @@ function handleStreamEvent(event, data, context = {}) {
         message.content += data.delta || "";
     }
     if (event === "state_delta") {
-        addMessage("system", `stage ${data.stage ?? ""} ${data.stage_name || ""}`.trim(), "done");
+        const stageText = onboardingStageText(data);
+        if (stageText) addMessage("system", stageText, "done");
     }
     if (event === "audio") {
         setStatus("收到音频事件");
+    }
+    if (event === "followup") {
+        if (data.reply) {
+            addMessage("followup", data.reply, "done");
+        }
+        els.followupState.textContent = data.followup_type || "followup";
+    }
+    if (event === "followup_done") {
+        els.followupState.textContent = "done";
     }
     if (event === "done") {
         const message = context.assistantMessage || addMessage("assistant", "", "streaming");
         message.content = data.reply || message.content || data.text || "";
         message.status = "done";
         state.runStatusText = data.status || "completed";
+        if (data.request_id && data.retrieval_status) {
+            els.followupState.textContent = data.retrieval_status;
+        }
         setStatus("回复完成");
     }
     if (event === "error") {
@@ -716,6 +888,7 @@ function handleStreamEvent(event, data, context = {}) {
         setStatus("播放完成");
     }
     renderTimeline();
+    renderOnboarding();
     renderStatus();
 }
 
@@ -752,6 +925,95 @@ function renderTimeline() {
     els.timeline.scrollTop = els.timeline.scrollHeight;
 }
 
+function renderFollowups() {
+    els.followupPending.replaceChildren();
+    if (!state.followupPending.length) {
+        els.followupPending.textContent = "暂无 pending";
+        els.followupState.textContent = state.followupStreaming ? "streaming" : "idle";
+        return;
+    }
+    els.followupState.textContent = `${state.followupPending.length} pending`;
+    for (const item of state.followupPending) {
+        const row = document.createElement("div");
+        row.className = "pending-item";
+        const title = document.createElement("strong");
+        title.textContent = item.request_id || "unknown request";
+        const detail = document.createElement("span");
+        detail.textContent = `${item.conversation_id || "--"} · ${item.status || "--"}`;
+        row.append(title, detail);
+        els.followupPending.append(row);
+    }
+}
+
+function updateOnboardingState(payload) {
+    if (!payload || typeof payload !== "object") return;
+    const hasOnboardingField = [
+        "onboarding_session_id",
+        "stage",
+        "stage_key",
+        "stage_name",
+        "status",
+        "onboarding_complete",
+        "collected",
+        "missing_required_slots",
+    ].some((key) => Object.prototype.hasOwnProperty.call(payload, key));
+    if (!hasOnboardingField) return;
+
+    if (typeof payload.onboarding_session_id === "string") {
+        state.onboarding.onboarding_session_id = payload.onboarding_session_id;
+    }
+    if (payload.stage !== undefined && payload.stage !== null) {
+        state.onboarding.stage = payload.stage;
+    }
+    if (typeof payload.stage_key === "string") {
+        state.onboarding.stage_key = payload.stage_key;
+    }
+    if (typeof payload.stage_name === "string") {
+        state.onboarding.stage_name = payload.stage_name;
+    }
+    if (typeof payload.status === "string") {
+        state.onboarding.status = payload.status;
+    }
+    if (typeof payload.onboarding_complete === "boolean") {
+        state.onboarding.onboarding_complete = payload.onboarding_complete;
+    }
+    if (payload.collected && typeof payload.collected === "object" && !Array.isArray(payload.collected)) {
+        state.onboarding.collected = payload.collected;
+    }
+    if (Array.isArray(payload.missing_required_slots)) {
+        state.onboarding.missing_required_slots = payload.missing_required_slots;
+    }
+}
+
+function onboardingStageText(payload) {
+    const stage = payload.stage ?? "";
+    const name = payload.stage_name || payload.stage_key || "";
+    if (stage === "" && !name) return "";
+    return `stage ${stage} ${name}`.trim();
+}
+
+function renderOnboarding() {
+    const onboarding = state.onboarding;
+    const complete = Boolean(onboarding.onboarding_complete);
+    els.onboardingStatus.textContent = complete
+        ? "complete"
+        : onboarding.status || (state.workflow === "onboarding" ? "active" : "idle");
+    els.onboardingSessionId.textContent = onboarding.onboarding_session_id || "--";
+    els.onboardingStage.textContent = onboarding.stage === null || onboarding.stage === undefined
+        ? "--"
+        : `${onboarding.stage}${onboarding.stage_name ? ` · ${onboarding.stage_name}` : ""}`;
+    els.onboardingCollected.textContent = objectHasKeys(onboarding.collected)
+        ? JSON.stringify(onboarding.collected, null, 2)
+        : "--";
+    els.onboardingMissing.textContent = onboarding.missing_required_slots.length
+        ? onboarding.missing_required_slots.join("\n")
+        : "--";
+}
+
+function objectHasKeys(value) {
+    return value && typeof value === "object" && Object.keys(value).length > 0;
+}
+
 function renderStatus() {
     els.sessionId.textContent = state.interactionSessionId || "--";
     els.sessionTitle.textContent = state.interactionSessionId || "未创建 session";
@@ -761,6 +1023,7 @@ function renderStatus() {
     els.workflowPill.textContent = state.workflow || "chat";
     els.runStatus.textContent = state.runStatusText || (state.activeRunId ? "active" : "idle");
     els.liveState.textContent = state.activeLiveMode || "idle";
+    renderOnboarding();
     els.finishLiveBtn.disabled = !state.activeLiveMode;
     els.abortLiveBtn.disabled = state.activeLiveMode !== "local";
     if (!state.autoVoiceSessionId) {
@@ -856,6 +1119,11 @@ function wireEvents() {
     els.autoLocalBtn.addEventListener("click", () => startAutoVoice("local").catch((error) => setStatus(error.message)));
     els.autoRobotBtn.addEventListener("click", () => startAutoVoice("robot").catch((error) => setStatus(error.message)));
     els.autoStopBtn.addEventListener("click", () => stopAutoVoice().catch((error) => setStatus(error.message)));
+    els.refreshFollowupsBtn.addEventListener("click", () => refreshFollowups().catch((error) => setStatus(error.message)));
+    els.runFollowupsBtn.addEventListener("click", () => runPendingFollowups().catch((error) => setStatus(error.message)));
+    els.followupStreamBtn.addEventListener("click", toggleFollowupStream);
+    els.memoryCurateBtn.addEventListener("click", () => runMemoryCurate().catch((error) => setStatus(error.message)));
+    els.profileRefreshBtn.addEventListener("click", () => refreshProfile().catch((error) => setStatus(error.message)));
     els.clearEventsBtn.addEventListener("click", clearEvents);
     els.workflow.addEventListener("change", normalizeWorkflow);
 }
@@ -864,6 +1132,8 @@ async function initialize() {
     wireEvents();
     normalizeWorkflow();
     renderTimeline();
+    renderFollowups();
+    renderOnboarding();
     await loadSettings();
     await checkHealth().catch(() => {});
 }
@@ -879,6 +1149,14 @@ window.__reachyDialogue = {
     abortLive,
     startAutoVoice,
     stopAutoVoice,
+    refreshFollowups,
+    runPendingFollowups,
+    toggleFollowupStream,
+    closeFollowupStream,
+    runMemoryCurate,
+    refreshProfile,
+    updateOnboardingState,
+    renderOnboarding,
     handleStreamEvent,
     consumeSseResponse,
     playbackKeyFromPayload,

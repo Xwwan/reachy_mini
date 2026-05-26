@@ -269,6 +269,37 @@ function createSandbox() {
                 }),
             ]);
         }
+        if (pathOnly === "/api/followups/pending") {
+            return makeJsonResponse({
+                pending: [
+                    {
+                        request_id: "req_1",
+                        conversation_id: "stream-test",
+                        status: "retrieval_completed",
+                    },
+                ],
+            });
+        }
+        if (pathOnly === "/api/followups/req_1/run") {
+            assert.equal(method, "POST");
+            return makeJsonResponse({
+                request_id: "req_1",
+                conversation_id: "stream-test",
+                decision: "followup",
+                followup_type: "supplement",
+                reply: "补充一句",
+            });
+        }
+        if (pathOnly === "/api/memory/curate") {
+            assert.equal(method, "POST");
+            assert.equal(body.conversation_id, "stream-test");
+            assert.equal(body.history_limit, 50);
+            return makeJsonResponse({ conversation_id: "stream-test", operations: [], applied: [] });
+        }
+        if (pathOnly === "/api/memory/profile/refresh") {
+            assert.equal(method, "POST");
+            return makeJsonResponse({ should_update: false, patch: null, reason: "no change", new_profile: null });
+        }
         return makeJsonResponse({ ok: true });
     };
 
@@ -375,11 +406,51 @@ async function main() {
             assert.equal(api.els.liveTranscript.textContent, "语音测试");
             assert.ok(api.state.messages.some((message) => message.role === "assistant" && message.content === "收到"));
 
+            await api.refreshFollowups();
+            assert.equal(api.state.followupPending.length, 1);
+            await api.runPendingFollowups();
+            assert.ok(api.state.messages.some((message) => message.role === "followup" && message.content === "补充一句"));
+            await api.runMemoryCurate();
+            assert.ok(api.els.memoryResult.textContent.includes("operations"));
+            await api.refreshProfile();
+            assert.ok(api.els.memoryResult.textContent.includes("should_update"));
+
+            api.handleStreamEvent("state_delta", {
+                workflow: "onboarding",
+                onboarding_session_id: "onb_1",
+                stage: 2,
+                stage_key: "preferences",
+                stage_name: "偏好",
+                status: "active",
+                collected: { name: "小王" },
+                missing_required_slots: ["favorite_topic"],
+                onboarding_complete: false,
+            });
+            assert.equal(api.els.onboardingSessionId.textContent, "onb_1");
+            assert.equal(api.els.onboardingStage.textContent, "2 · 偏好");
+            assert.ok(api.els.onboardingCollected.textContent.includes("小王"));
+            assert.ok(api.els.onboardingMissing.textContent.includes("favorite_topic"));
+
+            api.handleStreamEvent("done", {
+                workflow: "onboarding",
+                onboarding_session_id: "onb_1",
+                stage: 5,
+                stage_name: "完成",
+                collected: { name: "小王", favorite_topic: "机器人" },
+                missing_required_slots: [],
+                onboarding_complete: true,
+            });
+            assert.equal(api.els.onboardingStatus.textContent, "complete");
+
             const sessionCalls = __calls.filter((call) => call.path === "/api/interaction/session");
             assert.equal(sessionCalls.length, 1, "text and robot voice should reuse one interaction session");
             assert.ok(__calls.some((call) => call.path === "/api/interaction/text-stream"));
             assert.ok(__calls.some((call) => call.path === "/api/robot-mic/start-interaction"));
             assert.ok(__calls.some((call) => call.path === "/api/robot-mic/finish-interaction-stream"));
+            assert.ok(__calls.some((call) => call.path === "/api/followups/pending"));
+            assert.ok(__calls.some((call) => call.path === "/api/followups/req_1/run"));
+            assert.ok(__calls.some((call) => call.path === "/api/memory/curate"));
+            assert.ok(__calls.some((call) => call.path === "/api/memory/profile/refresh"));
         })()
     `, context);
 

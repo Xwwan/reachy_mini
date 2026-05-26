@@ -119,6 +119,49 @@
                     </dl>
                 </section>
 
+                <section class="tool-panel" aria-label="Onboarding 状态">
+                    <div class="panel-heading">
+                        <span>Onboarding</span>
+                        <strong id="onboarding-status">idle</strong>
+                    </div>
+                    <dl class="status-grid">
+                        <div>
+                            <dt>Session</dt>
+                            <dd id="onboarding-session-id">--</dd>
+                        </div>
+                        <div>
+                            <dt>Stage</dt>
+                            <dd id="onboarding-stage">--</dd>
+                        </div>
+                    </dl>
+                    <div class="state-block">
+                        <span>Collected</span>
+                        <pre id="onboarding-collected">--</pre>
+                    </div>
+                    <div class="state-block">
+                        <span>Missing</span>
+                        <pre id="onboarding-missing">--</pre>
+                    </div>
+                </section>
+
+                <section class="tool-panel" aria-label="记忆">
+                    <div class="panel-heading">
+                        <span>Follow-up / Memory</span>
+                        <strong id="followup-state">idle</strong>
+                    </div>
+                    <div class="button-row">
+                        <button id="refresh-followups-btn" class="secondary-action" type="button">刷新</button>
+                        <button id="run-followups-btn" class="secondary-action" type="button">运行</button>
+                    </div>
+                    <button id="followup-stream-btn" class="secondary-action wide-action" type="button">订阅二次回复</button>
+                    <div id="followup-pending" class="pending-list">暂无 pending</div>
+                    <div class="button-row">
+                        <button id="memory-curate-btn" class="secondary-action" type="button">整理记忆</button>
+                        <button id="profile-refresh-btn" class="secondary-action" type="button">刷新画像</button>
+                    </div>
+                    <pre id="memory-result" class="json-output">等待记忆操作</pre>
+                </section>
+
                 <section class="tool-panel debug-panel" aria-label="事件">
                     <div class="panel-heading">
                         <span>事件</span>

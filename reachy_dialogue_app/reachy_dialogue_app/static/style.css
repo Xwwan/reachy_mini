@@ -71,6 +71,7 @@ button:disabled {
 .composer,
 .segmented,
 .live-actions,
+.button-row,
 .topbar-actions {
     display: flex;
     gap: 12px;
@@ -261,6 +262,11 @@ textarea {
     background: #f0fdfa;
 }
 
+.message-row.followup {
+    border-color: #c4b5fd;
+    background: #f5f3ff;
+}
+
 .message-row.system {
     border-color: #fde68a;
     background: #fffbeb;
@@ -319,6 +325,67 @@ textarea {
 
 .live-actions button {
     flex: 1;
+}
+
+.button-row {
+    align-items: center;
+}
+
+.button-row button,
+.wide-action {
+    flex: 1;
+}
+
+.pending-list,
+.json-output,
+.state-block {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #f8fafc;
+    padding: 10px;
+    color: var(--muted);
+    font-size: 0.82rem;
+}
+
+.pending-list {
+    display: grid;
+    gap: 6px;
+}
+
+.pending-item {
+    display: grid;
+    gap: 2px;
+    color: var(--ink);
+}
+
+.pending-item span {
+    color: var(--muted);
+    overflow-wrap: anywhere;
+}
+
+.json-output {
+    min-height: 90px;
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+}
+
+.state-block {
+    display: grid;
+    gap: 6px;
+}
+
+.state-block span {
+    color: var(--muted);
+    font-size: 0.78rem;
+}
+
+.state-block pre {
+    margin: 0;
+    max-height: 110px;
+    overflow: auto;
+    white-space: pre-wrap;
+    color: var(--ink);
 }
 
 .status-grid {

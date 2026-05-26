@@ -276,6 +276,62 @@ class InteractionApiClient:
         )
         return json_or_error(response)
 
+    def list_pending_followups(self) -> JsonDict:
+        response = self.session.get(
+            self._url("/followups/pending"),
+            timeout=self.request_timeout,
+        )
+        return json_or_error(response)
+
+    def followup_stream(
+        self,
+        *,
+        conversation_id: str,
+        tts_enabled: bool = False,
+    ) -> Iterable[SseEvent]:
+        response = self.session.get(
+            self._url("/followups/stream"),
+            params={
+                "conversation_id": conversation_id,
+                "tts_enabled": bool(tts_enabled),
+            },
+            stream=True,
+            timeout=self.stream_timeout,
+        )
+        return self._iter_response_events(response)
+
+    def run_followup(self, request_id: str) -> JsonDict:
+        response = self.session.post(
+            self._url("/followups/" + quote(request_id, safe="") + "/run"),
+            json={},
+            timeout=self.stream_timeout,
+        )
+        return json_or_error(response)
+
+    def memory_curate(
+        self,
+        *,
+        conversation_id: str,
+        history_limit: int = 50,
+    ) -> JsonDict:
+        response = self.session.post(
+            self._url("/memory/curate"),
+            json={
+                "conversation_id": conversation_id,
+                "history_limit": int(history_limit),
+            },
+            timeout=self.stream_timeout,
+        )
+        return json_or_error(response)
+
+    def memory_profile_refresh(self) -> JsonDict:
+        response = self.session.post(
+            self._url("/memory/profile/refresh"),
+            json={},
+            timeout=self.stream_timeout,
+        )
+        return json_or_error(response)
+
     def _iter_response_events(self, response: requests.Response) -> Iterable[SseEvent]:
         try:
             raise_for_error(response)

@@ -21,8 +21,9 @@ Interaction API documented in:
 ```
 
 The app is now a local Reachy Mini device bridge plus a browser workbench. It no
-longer falls back to the old `/chat`, `/chat/stream`, `/voice/chat`,
-`/voice/live/*`, `/followups/*`, or `/memory/*` backend routes.
+longer falls back to the old `/chat`, `/chat/stream`, `/voice/chat`, or
+`/voice/live/*` backend routes. Follow-up and memory remain separate backend
+capabilities and are exposed only as auxiliary debugging/control routes.
 
 ## Architecture
 
@@ -58,15 +59,18 @@ The local app provides a smaller `/api/*` surface for the browser and robot:
 - `GET /api/auto-voice/events`
 - `GET /api/auto-voice/state`
 - `POST /api/auto-voice/stop`
+- `GET /api/followups/pending`
+- `GET /api/followups/stream`
+- `POST /api/followups/{request_id}/run`
+- `POST /api/memory/curate`
+- `POST /api/memory/profile/refresh`
 - settings, health, audio volume, robot mic level/debug, and robot mic playback test helpers
 
-The old local dialogue routes have been removed:
+The old local dialogue entrypoints have been removed:
 
 - `/api/text-chat-stream`
 - `/api/voice-chat`
 - `/api/local-mic/*`
-- `/api/followups/*`
-- `/api/memory/*`
 - old `/api/robot-mic/start`, `/api/robot-mic/stop`, `/api/robot-mic/stop-stream`
 
 ## Workflows
@@ -272,6 +276,7 @@ The current tests cover:
 - live voice start/chunk/transcript/finish/abort
 - `finish-transcript` for auto voice wake gate
 - playback metadata and playback done/error reporting
+- follow-up and memory auxiliary route proxying
 - new frontend route usage
 - removal of old local dialogue routes
 
@@ -299,6 +304,8 @@ export REACHY_DIALOGUE_EMOJI_SERVICE_URL=http://127.0.0.1:8001
 - The app intentionally does not call legacy backend routes.
 - The deleted `local-mic-test.html` flow has been replaced by the main
   workbench's local microphone Interaction flow.
-- Follow-up and memory behavior are now backend concerns surfaced through
-  Interaction events and run state, not local `/api/followups/*` or
-  `/api/memory/*` helpers.
+- Follow-up remains separate from Interaction. Late follow-up replies are appended
+  to the dialogue tail, and follow-up TTS is grouped by `request_id +
+  followup_turn_id` before entering the robot playback queue.
+- Memory curate/profile refresh are debug operations; they do not replace the
+  Interaction chat/onboarding workflow.
