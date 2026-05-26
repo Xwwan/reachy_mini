@@ -21,6 +21,7 @@ def test_frontend_targets_interaction_routes() -> None:
     ).read_text(encoding="utf-8")
 
     assert "/api/interaction/session" in main_js
+    assert "/api/interaction/runs/" in main_js
     assert "/api/interaction/text-stream" in main_js
     assert "/api/interaction/live/start" in main_js
     assert "/api/robot-mic/start-interaction" in main_js

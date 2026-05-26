@@ -328,6 +328,40 @@ def test_interaction_session_route_creates_backend_session() -> None:
     ]
 
 
+def test_interaction_session_run_debug_routes_proxy_backend_methods() -> None:
+    fake_client = FakeInteractionRouteClient()
+    app = FastAPI()
+    settings = {
+        "service_url": "http://backend.test",
+        "conversation_id": "default-conversation",
+        "tts_sample_rate": 24000,
+    }
+    dialogue_main._register_interaction_routes(
+        app,
+        settings,
+        dialogue_main.threading.Lock(),
+        behavior_config={"enabled": False},
+        client_factory=lambda service_url: fake_client,  # type: ignore[arg-type]
+    )
+    client = TestClient(app)
+
+    session_response = client.get("/api/interaction/session/isess_1")
+    runs_response = client.get("/api/interaction/session/isess_1/runs", params={"limit": 5})
+    run_response = client.get("/api/interaction/runs/irun_1")
+
+    assert session_response.status_code == 200
+    assert session_response.json()["interaction_session_id"] == "isess_1"
+    assert runs_response.status_code == 200
+    assert runs_response.json()["runs"][0]["run_id"] == "irun_1"
+    assert run_response.status_code == 200
+    assert run_response.json()["playback_status"] == "done"
+    assert fake_client.get_session_calls == ["isess_1"]
+    assert fake_client.list_runs_calls == [
+        {"interaction_session_id": "isess_1", "limit": 5}
+    ]
+    assert fake_client.get_run_calls == ["irun_1"]
+
+
 def test_interaction_text_stream_route_proxies_new_backend_events() -> None:
     fake_client = FakeInteractionRouteClient(
         text_events=[
@@ -670,6 +704,9 @@ class FakeInteractionRouteClient:
         self.live_events = live_events or []
         self.followup_events = followup_events or []
         self.create_session_calls: list[dict] = []
+        self.get_session_calls: list[str] = []
+        self.list_runs_calls: list[dict] = []
+        self.get_run_calls: list[str] = []
         self.text_stream_calls: list[dict] = []
         self.live_start_calls: list[dict] = []
         self.live_chunk_calls: list[dict] = []
@@ -701,6 +738,51 @@ class FakeInteractionRouteClient:
             "conversation_id": conversation_id,
             "input_mode": input_mode,
             "tts_enabled": tts_enabled,
+        }
+
+    def get_session(self, interaction_session_id: str) -> dict:
+        self.get_session_calls.append(interaction_session_id)
+        return {
+            "interaction_session_id": interaction_session_id,
+            "workflow": "chat",
+            "conversation_id": "default-conversation",
+            "status": "active",
+        }
+
+    def list_runs(
+        self,
+        interaction_session_id: str,
+        *,
+        limit: int,
+    ) -> dict:
+        self.list_runs_calls.append(
+            {
+                "interaction_session_id": interaction_session_id,
+                "limit": limit,
+            }
+        )
+        return {
+            "interaction_session_id": interaction_session_id,
+            "runs": [
+                {
+                    "run_id": "irun_1",
+                    "interaction_session_id": interaction_session_id,
+                    "workflow": "chat",
+                    "status": "completed",
+                    "playback_status": "done",
+                }
+            ],
+        }
+
+    def get_run(self, run_id: str) -> dict:
+        self.get_run_calls.append(run_id)
+        return {
+            "run_id": run_id,
+            "interaction_session_id": "isess_1",
+            "workflow": "chat",
+            "status": "completed",
+            "playback_status": "done",
+            "reply": "你好",
         }
 
     def text_stream(

@@ -46,6 +46,9 @@ The backend owns dialogue state and exposes the canonical Interaction API:
 The local app provides a smaller `/api/*` surface for the browser and robot:
 
 - `POST /api/interaction/session`
+- `GET /api/interaction/session/{interaction_session_id}`
+- `GET /api/interaction/session/{interaction_session_id}/runs`
+- `GET /api/interaction/runs/{run_id}`
 - `POST /api/interaction/text-stream`
 - `POST /api/interaction/live/start`
 - `POST /api/interaction/live/chunk`
@@ -217,6 +220,9 @@ The root page is the main workbench. It includes:
 - robot microphone live interaction
 - auto voice controls
 - current session/run/playback/live identifiers
+- session/run debug refresh, including playback status and run errors
+- onboarding stage, collected fields, and missing required slots
+- follow-up and memory controls
 - raw SSE event log
 
 `web-only` mode hides robot-only controls and keeps local text, local mic, and
@@ -276,6 +282,7 @@ The current tests cover:
 - live voice start/chunk/transcript/finish/abort
 - `finish-transcript` for auto voice wake gate
 - playback metadata and playback done/error reporting
+- session/run debug route proxying
 - follow-up and memory auxiliary route proxying
 - new frontend route usage
 - removal of old local dialogue routes

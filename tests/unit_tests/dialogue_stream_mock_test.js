@@ -237,6 +237,38 @@ function createSandbox() {
                 }),
             ]);
         }
+        if (pathOnly === "/api/interaction/session/isess_1") {
+            return makeJsonResponse({
+                interaction_session_id: "isess_1",
+                workflow: "chat",
+                conversation_id: "stream-test",
+                status: "active",
+            });
+        }
+        if (pathOnly === "/api/interaction/session/isess_1/runs") {
+            return makeJsonResponse({
+                interaction_session_id: "isess_1",
+                runs: [
+                    {
+                        run_id: "irun_1",
+                        workflow: "chat",
+                        status: "completed",
+                        playback_status: "done",
+                        playback_key: "chat-tts-irun_1",
+                    },
+                ],
+            });
+        }
+        if (pathOnly === "/api/interaction/runs/irun_1") {
+            return makeJsonResponse({
+                run_id: "irun_1",
+                workflow: "chat",
+                status: "completed",
+                playback_status: "done",
+                playback_key: "chat-tts-irun_1",
+                reply: "你好世界",
+            });
+        }
         if (pathOnly === "/api/robot-mic/start-interaction") {
             assert.equal(method, "POST");
             assert.equal(body.interaction_session_id, "isess_1");
@@ -397,6 +429,15 @@ async function main() {
             assert.ok(api.state.messages.some((message) => message.role === "assistant" && message.content === "你好世界"));
             assert.ok(api.els.eventLog.textContent.includes("audio"));
             assert.equal(api.playbackKeyFromPayload({ run_id: "irun_fallback" }), "run:irun_fallback");
+
+            await api.refreshSessionState();
+            assert.ok(api.els.runDetail.textContent.includes("isess_1"));
+            await api.listRuns();
+            assert.equal(api.state.runHistory.length, 1);
+            assert.equal(api.els.runList.children.length, 1);
+            await api.getActiveRun();
+            assert.ok(api.els.runDetail.textContent.includes("playback_status"));
+            assert.equal(api.state.runStatusText, "completed / done");
 
             await api.startRobotLive();
             assert.equal(api.state.activeLiveMode, "robot");

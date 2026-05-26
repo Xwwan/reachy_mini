@@ -11,6 +11,9 @@ const state = {
     activeLiveSessionId: "",
     activeLiveMode: "",
     runStatusText: "idle",
+    sessionSnapshot: null,
+    runHistory: [],
+    runDetail: null,
     onboarding: {
         onboarding_session_id: "",
         stage: null,
@@ -77,6 +80,11 @@ const els = {
     runId: document.getElementById("run-id"),
     playbackKey: document.getElementById("playback-key"),
     liveSessionId: document.getElementById("live-session-id"),
+    refreshSessionBtn: document.getElementById("refresh-session-btn"),
+    listRunsBtn: document.getElementById("list-runs-btn"),
+    getRunBtn: document.getElementById("get-run-btn"),
+    runList: document.getElementById("run-list"),
+    runDetail: document.getElementById("run-detail"),
     onboardingStatus: document.getElementById("onboarding-status"),
     onboardingSessionId: document.getElementById("onboarding-session-id"),
     onboardingStage: document.getElementById("onboarding-stage"),
@@ -555,6 +563,68 @@ async function refreshFollowups() {
     return state.followupPending;
 }
 
+async function refreshSessionState() {
+    if (!state.interactionSessionId) {
+        setStatus("还没有 interaction session");
+        return null;
+    }
+    const response = await fetch(`/api/interaction/session/${encodeURIComponent(state.interactionSessionId)}`);
+    const payload = await response.json();
+    appendEvent("session_state", payload);
+    if (!response.ok) {
+        throw new Error(payload.detail || "刷新 session 失败");
+    }
+    state.sessionSnapshot = payload;
+    if (payload.workflow) state.workflow = payload.workflow;
+    updateOnboardingState(payload);
+    els.runDetail.textContent = JSON.stringify(payload, null, 2);
+    renderOnboarding();
+    renderStatus();
+    setStatus("session 状态已刷新");
+    return payload;
+}
+
+async function listRuns() {
+    if (!state.interactionSessionId) {
+        setStatus("还没有 interaction session");
+        return [];
+    }
+    const response = await fetch(`/api/interaction/session/${encodeURIComponent(state.interactionSessionId)}/runs?limit=20`);
+    const payload = await response.json();
+    appendEvent("runs", payload);
+    if (!response.ok) {
+        throw new Error(payload.detail || "获取 runs 失败");
+    }
+    state.runHistory = Array.isArray(payload.runs) ? payload.runs : [];
+    renderRuns();
+    setStatus(`runs ${state.runHistory.length} 条`);
+    return state.runHistory;
+}
+
+async function getActiveRun() {
+    const runId = state.activeRunId || (state.runHistory[0] && state.runHistory[0].run_id);
+    if (!runId) {
+        setStatus("还没有 run");
+        return null;
+    }
+    const response = await fetch(`/api/interaction/runs/${encodeURIComponent(runId)}`);
+    const payload = await response.json();
+    appendEvent("run_detail", payload);
+    if (!response.ok) {
+        throw new Error(payload.detail || "获取 run 失败");
+    }
+    state.runDetail = payload;
+    state.activeRunId = payload.run_id || runId;
+    if (payload.playback_key) state.activePlaybackKey = payload.playback_key;
+    state.runStatusText = payload.playback_status
+        ? `${payload.status || "run"} / ${payload.playback_status}`
+        : payload.status || state.runStatusText;
+    els.runDetail.textContent = JSON.stringify(payload, null, 2);
+    renderStatus();
+    setStatus("run 状态已刷新");
+    return payload;
+}
+
 async function runPendingFollowups() {
     const pending = state.followupPending.length
         ? state.followupPending
@@ -945,6 +1015,33 @@ function renderFollowups() {
     }
 }
 
+function renderRuns() {
+    els.runList.replaceChildren();
+    if (!state.runHistory.length) {
+        els.runList.textContent = "暂无 runs";
+        return;
+    }
+    for (const run of state.runHistory) {
+        const row = document.createElement("button");
+        row.className = "run-item";
+        row.type = "button";
+        const title = document.createElement("strong");
+        title.textContent = run.run_id || "unknown run";
+        const detail = document.createElement("span");
+        detail.textContent = [
+            run.workflow,
+            run.status,
+            run.playback_status ? `playback ${run.playback_status}` : "",
+        ].filter(Boolean).join(" · ");
+        row.append(title, detail);
+        row.addEventListener("click", () => {
+            state.activeRunId = run.run_id || "";
+            getActiveRun().catch((error) => setStatus(error.message));
+        });
+        els.runList.append(row);
+    }
+}
+
 function updateOnboardingState(payload) {
     if (!payload || typeof payload !== "object") return;
     const hasOnboardingField = [
@@ -1119,6 +1216,9 @@ function wireEvents() {
     els.autoLocalBtn.addEventListener("click", () => startAutoVoice("local").catch((error) => setStatus(error.message)));
     els.autoRobotBtn.addEventListener("click", () => startAutoVoice("robot").catch((error) => setStatus(error.message)));
     els.autoStopBtn.addEventListener("click", () => stopAutoVoice().catch((error) => setStatus(error.message)));
+    els.refreshSessionBtn.addEventListener("click", () => refreshSessionState().catch((error) => setStatus(error.message)));
+    els.listRunsBtn.addEventListener("click", () => listRuns().catch((error) => setStatus(error.message)));
+    els.getRunBtn.addEventListener("click", () => getActiveRun().catch((error) => setStatus(error.message)));
     els.refreshFollowupsBtn.addEventListener("click", () => refreshFollowups().catch((error) => setStatus(error.message)));
     els.runFollowupsBtn.addEventListener("click", () => runPendingFollowups().catch((error) => setStatus(error.message)));
     els.followupStreamBtn.addEventListener("click", toggleFollowupStream);
@@ -1132,6 +1232,7 @@ async function initialize() {
     wireEvents();
     normalizeWorkflow();
     renderTimeline();
+    renderRuns();
     renderFollowups();
     renderOnboarding();
     await loadSettings();
@@ -1149,6 +1250,9 @@ window.__reachyDialogue = {
     abortLive,
     startAutoVoice,
     stopAutoVoice,
+    refreshSessionState,
+    listRuns,
+    getActiveRun,
     refreshFollowups,
     runPendingFollowups,
     toggleFollowupStream,

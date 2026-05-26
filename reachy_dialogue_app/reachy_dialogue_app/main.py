@@ -727,6 +727,40 @@ def _register_interaction_routes(
         except InteractionApiError as exc:
             raise _interaction_http_exception(exc) from exc
 
+    @app.get("/api/interaction/session/{interaction_session_id}")
+    def get_interaction_session(interaction_session_id: str) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        try:
+            return client_factory(current["service_url"]).get_session(
+                _required_string(interaction_session_id, "interaction_session_id")
+            )
+        except InteractionApiError as exc:
+            raise _interaction_http_exception(exc) from exc
+
+    @app.get("/api/interaction/session/{interaction_session_id}/runs")
+    def list_interaction_runs(
+        interaction_session_id: str,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        try:
+            return client_factory(current["service_url"]).list_runs(
+                _required_string(interaction_session_id, "interaction_session_id"),
+                limit=limit,
+            )
+        except InteractionApiError as exc:
+            raise _interaction_http_exception(exc) from exc
+
+    @app.get("/api/interaction/runs/{run_id}")
+    def get_interaction_run(run_id: str) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        try:
+            return client_factory(current["service_url"]).get_run(
+                _required_string(run_id, "run_id")
+            )
+        except InteractionApiError as exc:
+            raise _interaction_http_exception(exc) from exc
+
     @app.post("/api/interaction/text-stream")
     def interaction_text_stream(
         payload: InteractionTextStreamPayload,
