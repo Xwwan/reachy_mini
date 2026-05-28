@@ -223,6 +223,15 @@ reachy_dialogue_app/models/*.onnx
 reachy_dialogue_app/models/*.onnx.*
 !reachy_dialogue_app/models/README.md
 
+# Local Reachy Mini robot launch/calibration scripts
+/apply_calibration_lww.sh
+/check_calibration_lww.sh
+/start_daemon_lww.sh
+
+# Local action playback test outputs
+/action_call/test_results.jsonl
+/action_pipeline/library/quick_tests/
+
 # PyPI configuration file
 .pypirc
 

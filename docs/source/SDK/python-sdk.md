@@ -116,15 +116,73 @@ Choose the appropriate media backend based on your Reachy Mini version and requi
 > **💡 Tip:** The WebRTC backend requires GStreamer to be installed on the client machine. See [GStreamer Installation](gstreamer-installation.md). For now only Linux is fully supported as a remote client. Other platforms (Windows, macOS) will be supported in [future releases](https://github.com/pollen-robotics/reachy_mini/issues/572).
 
 ## Recording Moves
-You can record a motion by moving the robot (compliant mode) or sending commands, and save it for later replay.
+You can record target frames while a Python program sends motion commands, then save the
+frames as a JSON move file for later replay.
+
+The current `start_recording()` / `stop_recording()` API records frames appended by
+`ReachyMini.set_target()`. It is useful for generated trajectories or teleoperation
+loops. It is **not** a background sampler: simply putting the robot in compliant or
+gravity-compensation mode and moving it by hand will not automatically add frames unless
+your script periodically reads the current robot state and calls `set_target(...)` or
+`_set_record_data(...)` itself.
 
 ```python
+import json
+import time
+from pathlib import Path
+
 from reachy_mini import ReachyMini
+from reachy_mini.motion.recorded_move import RecordedMove
+from reachy_mini.utils import create_head_pose
+
 with ReachyMini() as mini:
     mini.start_recording()
-    # ... robot moves ...
-    recorded_data = mini.stop_recording()
+
+    mini.set_target(head=create_head_pose(yaw=-10))
+    time.sleep(0.5)
+    mini.set_target(head=create_head_pose(yaw=10))
+    time.sleep(0.5)
+    mini.set_target(head=create_head_pose(yaw=0))
+    time.sleep(0.5)
+
+    frames = mini.stop_recording()
+
+target_frames = [
+    {
+        "time": frame["time"],
+        "head": frame["head"],
+        "left_arm": frame.get("left_arm", [0.0, 0.0]),
+        "right_arm": frame.get("right_arm", [0.0, 0.0]),
+        "body_yaw": frame.get("body_yaw", 0.0),
+    }
+    for frame in frames
+    if "head" in frame
+]
+if not target_frames:
+    raise RuntimeError("No head target frames were recorded.")
+
+move_data = {
+    "description": "Small head scan recorded from SDK target frames.",
+    "time": [frame["time"] - target_frames[0]["time"] for frame in target_frames],
+    "set_target_data": [
+        {
+            "head": frame["head"],
+            "left_arm": frame["left_arm"],
+            "right_arm": frame["right_arm"],
+            "body_yaw": frame["body_yaw"],
+        }
+        for frame in target_frames
+    ],
+}
+
+Path("my_move.json").write_text(json.dumps(move_data, indent=2))
+
+with ReachyMini() as mini:
+    mini.play_move(RecordedMove(move_data), initial_goto_duration=1.0)
 ```
+
+For a full local library, place one or more `*.json` files with this schema in a
+directory and load them with `RecordedMoves("/path/to/library")`.
 
 ## Next Steps
 * **[Browse the Examples Folder](https://github.com/pollen-robotics/reachy_mini/tree/main/examples)**
