@@ -675,20 +675,175 @@ mini.goto_target(head=create_head_pose(yaw=-10, pitch=20))
 <summary><strong>How do I record and replay moves?</strong></summary>
 
 **Recording:**
-Call `start_recording()` and `stop_recording()` around your control loop.
+Call `start_recording()` and `stop_recording()` around the part of your Python code
+that sends target frames. The current recorder stores frames appended by
+`ReachyMini.set_target()`, so it records commanded trajectories directly.
+
+```python
+import json
+import time
+from pathlib import Path
+
+from reachy_mini import ReachyMini
+from reachy_mini.utils import create_head_pose
+
+with ReachyMini() as mini:
+    mini.start_recording()
+    mini.set_target(head=create_head_pose(yaw=-10))
+    time.sleep(0.5)
+    mini.set_target(head=create_head_pose(yaw=10))
+    time.sleep(0.5)
+    frames = mini.stop_recording()
+
+target_frames = [
+    {
+        "time": frame["time"],
+        "head": frame["head"],
+        "left_arm": frame.get("left_arm", [0.0, 0.0]),
+        "right_arm": frame.get("right_arm", [0.0, 0.0]),
+        "body_yaw": frame.get("body_yaw", 0.0),
+    }
+    for frame in frames
+    if "head" in frame
+]
+if not target_frames:
+    raise RuntimeError("No head target frames were recorded.")
+
+move_data = {
+    "description": "Small recorded move.",
+    "time": [frame["time"] - target_frames[0]["time"] for frame in target_frames],
+    "set_target_data": [
+        {
+            "head": frame["head"],
+            "left_arm": frame["left_arm"],
+            "right_arm": frame["right_arm"],
+            "body_yaw": frame["body_yaw"],
+        }
+        for frame in target_frames
+    ],
+}
+
+Path("my_move.json").write_text(json.dumps(move_data, indent=2))
+```
+
+**Manual teaching / moving by hand:**
+`start_recording()` is not a background sampler. If you put the robot in compliant
+or gravity-compensation mode and move it by hand, you must sample the current state
+yourself and append frames. For example:
+
+```python
+import time
+
+from reachy_mini import ReachyMini
+
+with ReachyMini(media_backend="no_media") as mini:
+    mini.enable_gravity_compensation()
+    mini.start_recording()
+
+    t0 = time.time()
+    while time.time() - t0 < 5.0:
+        head_joints, _, _ = mini.get_current_joint_positions()
+        mini._set_record_data(
+            {
+                "time": time.time(),
+                "head": mini.get_current_head_pose().tolist(),
+                "left_arm": mini.get_present_left_arm_joint_positions(),
+                "right_arm": mini.get_present_right_arm_joint_positions(),
+                "body_yaw": float(head_joints[0]),
+            }
+        )
+        time.sleep(0.02)  # 50 Hz sampling
+
+    frames = mini.stop_recording()
+    mini.disable_gravity_compensation()
+```
+
+Then convert `frames` to the same JSON schema shown above.
+
+**Replaying one saved JSON file:**
+
+```python
+import json
+
+from reachy_mini import ReachyMini
+from reachy_mini.motion.recorded_move import RecordedMove
+
+with open("my_move.json", "r") as fp:
+    move_data = json.load(fp)
+
+with ReachyMini() as mini:
+    mini.play_move(RecordedMove(move_data), initial_goto_duration=1.0)
+```
+
+**Replaying a library directory:**
+Use `RecordedMoves` to load a directory or a Hugging Face dataset containing recorded
+move JSON files.
+
+```python
+from reachy_mini import ReachyMini
+from reachy_mini.motion.recorded_move import RecordedMoves
+
+recorded_moves = RecordedMoves("/path/to/my_moves")
+
+with ReachyMini() as mini:
+    mini.play_move(recorded_moves.get("my_move"), initial_goto_duration=1.0)
+```
+
+> Note: the manual example uses `_set_record_data()`, which is currently an internal
+> SDK method. It matches the daemon's recording buffer but may be replaced by a public
+> helper in the future.
+
+</details>
+
+<details>
+<summary><strong>Why is my recorded move empty?</strong></summary>
+
+`start_recording()` only opens the daemon-side recording buffer. Frames are added when
+the Python SDK sends `append_record` data, currently through `set_target()` or
+`_set_record_data()`.
+
+This means the following pattern starts and stops recording, but does not add frames:
 
 ```python
 mini.start_recording()
-# ... move robot ...
+# Moving the robot by hand here does not automatically append frames.
 move = mini.stop_recording()
 ```
 
-**Replaying:**
-Use the `RecordedMoves` class to load moves from the [Hugging Face library](https://github.com/pollen-robotics/reachy_mini_dances_library).
+Use one of these patterns instead:
+
+- For commanded motion, call `mini.set_target(...)` inside the recording window.
+- For manual teaching, periodically read the current state and append it with `_set_record_data(...)`.
+- For smooth gestures, save the returned frames as a `RecordedMove` JSON file before replaying.
+
+</details>
+
+<details>
+<summary><strong>Why does `RecordedMoves` not find my saved move?</strong></summary>
+
+`RecordedMoves("/path/to/library")` expects a directory containing `*.json` files
+directly, or inside a `data/` subdirectory. The move name is the filename stem.
+
+For example, this file:
+
+```text
+my_moves/wave.json
+```
+
+is loaded with:
 
 ```python
-mini.play_move(recorded_moves.get("dance_1"))
+from reachy_mini.motion.recorded_move import RecordedMoves
+
+recorded_moves = RecordedMoves("my_moves")
+move = recorded_moves.get("wave")
 ```
+
+Each JSON file must contain at least:
+
+- `description`: a string.
+- `time`: a list of timestamps in seconds, usually starting at `0.0`.
+- `set_target_data`: a list of frames with `head`, `left_arm`, `right_arm`, and `body_yaw`.
 
 </details>
 

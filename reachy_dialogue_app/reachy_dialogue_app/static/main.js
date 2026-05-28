@@ -36,6 +36,7 @@ let localPlaybackNextTime = 0;
 const LOCAL_TARGET_SAMPLE_RATE = 16000;
 const LOCAL_CHUNK_BYTES = 5120;
 const LOCAL_PLAYBACK_START_BUFFER_SECONDS = 0.08;
+// const LOCAL_PLAYBACK_START_BUFFER_SECONDS = 1.0;
 
 class AudioPlaybackScheduler {
     constructor({ ensureReady, playBytes, onStatus }) {
