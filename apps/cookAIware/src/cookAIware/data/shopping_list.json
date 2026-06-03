@@ -1,0 +1,27 @@
+[
+  {
+    "name": "arroz",
+    "quantity": 1600,
+    "unit": "g"
+  },
+  {
+    "name": "mix de verduras",
+    "quantity": 2140,
+    "unit": "g"
+  },
+  {
+    "name": "pasta",
+    "quantity": 200,
+    "unit": "g"
+  },
+  {
+    "name": "pollo",
+    "quantity": 6700,
+    "unit": "g"
+  },
+  {
+    "name": "tomates cherry",
+    "quantity": 2620,
+    "unit": "g"
+  }
+]

@@ -1,0 +1,1870 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Reachy Dance Duo - Pollen Robotics</title>
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap"
+		rel="stylesheet">
+	<style>
+		:root {
+			--primary: #FF9900;
+			--primary-glow: rgba(255, 153, 0, 0.4);
+			--dark-bg: #0A0A0A;
+			--card-bg: #141414;
+			--text-main: #FFFFFF;
+			--text-dim: #A0A0A0;
+			--accent-blue: #00D1FF;
+		}
+
+		* {
+			box-sizing: border-box;
+			margin: 0;
+			padding: 0;
+		}
+
+		body {
+			font-family: 'Outfit', sans-serif;
+			background-color: var(--dark-bg);
+			color: var(--text-main);
+			line-height: 1.6;
+			overflow-x: hidden;
+		}
+
+		/* --- Hero Section & 3D Canvas --- */
+		.hero {
+			position: relative;
+			height: 80vh;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			text-align: center;
+			padding: 2rem;
+			overflow: hidden;
+		}
+
+		#visualizer-container {
+			position: absolute;
+			top: 0;
+			left: 0;
+			width: 100%;
+			height: 100%;
+			z-index: 0;
+			opacity: 1.0;
+		}
+
+		.hero-content {
+			max-width: 800px;
+			z-index: 1;
+			pointer-events: none;
+		}
+
+		.hero h1 {
+			font-size: 4rem;
+			font-weight: 800;
+			margin-bottom: 1rem;
+			background: linear-gradient(90deg, #FFFFFF, var(--primary));
+			-webkit-background-clip: text;
+			background-clip: text;
+			-webkit-text-fill-color: transparent;
+			letter-spacing: -1px;
+		}
+
+		/* Overlay Controls for Demo */
+		#demo-controls {
+			position: absolute;
+			bottom: 20px;
+			left: 50%;
+			transform: translateX(-50%);
+			z-index: 10;
+			pointer-events: auto;
+		}
+
+		.audio-toggle-btn {
+			background: rgba(255, 153, 0, 0.2);
+			border: 1px solid var(--primary);
+			color: #fff;
+			padding: 10px 25px;
+			border-radius: 30px;
+			cursor: pointer;
+			font-family: 'Outfit', sans-serif;
+			font-weight: 600;
+			transition: all 0.3s ease;
+		}
+
+		.audio-toggle-btn:hover {
+			background: var(--primary);
+			color: black;
+			box-shadow: 0 0 20px var(--primary-glow);
+		}
+
+		/* --- Dance Duo: auth, picker, control panels --- */
+		.dd-overlay {
+			position: absolute;
+			inset: 0;
+			z-index: 1500;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			background: rgba(0, 0, 0, 0.55);
+			backdrop-filter: blur(4px);
+			pointer-events: auto;
+		}
+		.dd-overlay[hidden] { display: none; }
+		.dd-card {
+			min-width: 320px;
+			max-width: 92vw;
+			background: rgba(10, 10, 16, 0.95);
+			border: 1px solid rgba(0, 255, 255, 0.25);
+			border-radius: 12px;
+			padding: 22px;
+			color: #fff;
+			font-family: 'Outfit', sans-serif;
+			box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+		}
+		.dd-card h3 { font-size: 1.1rem; font-weight: 700; margin: 0; color: #fff; }
+		.dd-card .muted { color: #a0a0a0; font-size: 0.85rem; }
+		.dd-card .small { font-size: 0.75rem; }
+		.dd-btn {
+			background: linear-gradient(90deg, #ff007a, #ff4040);
+			color: #fff;
+			border: none;
+			border-radius: 28px;
+			padding: 10px 22px;
+			font-family: 'Outfit', sans-serif;
+			font-weight: 600;
+			cursor: pointer;
+			transition: transform 0.15s ease, box-shadow 0.15s ease;
+			font-size: 0.9rem;
+		}
+		.dd-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(255, 0, 122, 0.4); }
+		.dd-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+		.dd-btn.secondary {
+			background: transparent;
+			border: 1px solid #00f2ff;
+			color: #00f2ff;
+		}
+		.dd-chip {
+			display: inline-block;
+			background: rgba(0, 242, 255, 0.12);
+			border: 1px solid #00f2ff;
+			color: #00f2ff;
+			border-radius: 20px;
+			padding: 4px 12px;
+			font-size: 0.8rem;
+			align-self: flex-start;
+		}
+		.picker-row {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			gap: 12px;
+		}
+		.picker-row label { color: #ccc; font-size: 0.85rem; }
+		.picker-row select {
+			flex: 1;
+			background: rgba(0, 0, 0, 0.6);
+			border: 1px solid rgba(0, 255, 255, 0.4);
+			color: #fff;
+			padding: 6px 8px;
+			border-radius: 6px;
+			font-family: 'Outfit', sans-serif;
+		}
+
+		.dd-panel {
+			position: absolute;
+			bottom: 24px;
+			z-index: 1100;
+			width: 280px;
+			max-height: 60vh;
+			overflow-y: auto;
+			background: rgba(10, 10, 16, 0.85);
+			backdrop-filter: blur(8px);
+			border: 1px solid rgba(255, 255, 255, 0.08);
+			border-radius: 12px;
+			padding: 14px;
+			color: #fff;
+			font-family: 'Outfit', sans-serif;
+			font-size: 0.85rem;
+			pointer-events: auto;
+		}
+		.dd-panel[hidden] { display: none; }
+		.dd-panel.left { left: 24px; border-left: 3px solid #00FFFF; }
+		.dd-panel.right { right: 24px; border-right: 3px solid #ffffff; top: 90px; bottom: auto; max-height: calc(100vh - 110px); }
+		.dd-panel h4 {
+			font-size: 0.95rem;
+			font-weight: 700;
+			margin: 0 0 10px 0;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+		}
+		.dd-tag {
+			font-size: 0.65rem;
+			font-weight: 600;
+			text-transform: uppercase;
+			letter-spacing: 0.5px;
+			padding: 2px 8px;
+			border-radius: 12px;
+		}
+		.dd-tag.cyan { background: rgba(0,255,255,0.15); color: #00FFFF; border: 1px solid #00FFFF; }
+		.dd-tag.white { background: rgba(255,255,255,0.10); color: #fff; border: 1px solid rgba(255,255,255,0.6); }
+		.dd-panel .dd-btn { width: 100%; margin: 8px 0; }
+		.dd-stats {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 6px;
+			margin-top: 10px;
+			font-size: 0.75rem;
+			color: #a0a0a0;
+		}
+		.dd-stats b { color: #fff; font-weight: 600; }
+		.dd-slider {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			margin-top: 10px;
+			font-size: 0.75rem;
+			color: #a0a0a0;
+		}
+		.dd-slider input { flex: 1; }
+		.dd-search { display: flex; gap: 6px; }
+		.dd-search input {
+			flex: 1;
+			background: rgba(0,0,0,0.6);
+			border: 1px solid rgba(255,255,255,0.15);
+			color: #fff;
+			padding: 6px 10px;
+			border-radius: 6px;
+			font-family: 'Outfit', sans-serif;
+			font-size: 0.85rem;
+		}
+		.dd-results {
+			list-style: none;
+			max-height: 180px;
+			overflow-y: auto;
+			margin: 8px 0;
+			padding: 0;
+		}
+		.dd-results li {
+			padding: 6px 8px;
+			border-radius: 6px;
+			cursor: pointer;
+			font-size: 0.8rem;
+			color: #ccc;
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+		.dd-results li:hover { background: rgba(255,255,255,0.06); }
+		.dd-results img { width: 32px; height: 32px; border-radius: 4px; object-fit: cover; }
+		.dd-results .meta { flex: 1; min-width: 0; }
+		.dd-results .meta div:first-child { color: #fff; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		.dd-results .meta div:last-child { color: #888; font-size: 0.7rem; }
+		.dd-status { font-size: 0.75rem; padding: 8px; border-radius: 6px; margin: 6px 0; }
+		.dd-status.pulse { background: rgba(0,242,255,0.10); color: #00f2ff; }
+		.dd-status.success { background: rgba(74,222,128,0.10); color: #4ade80; }
+		.dd-status.err-status { background: rgba(248,113,113,0.10); color: #f87171; }
+		#bb-audio { width: 100%; margin: 6px 0; }
+
+		/* --- Editor UI STYLES --- */
+		#builder-panel {
+			position: absolute;
+			top: 20px;
+			right: 20px;
+			width: 220px;
+			background: rgba(0, 20, 20, 0.9);
+			border: 1px solid #0ff;
+			color: #0ff;
+			padding: 15px;
+			border-radius: 8px;
+			font-family: 'Outfit', sans-serif;
+			box-shadow: 0 0 20px rgba(0, 255, 255, 0.2);
+			z-index: 1001;
+		}
+
+		#builder-panel.hidden {
+			display: none;
+		}
+
+		#builder-panel h3 {
+			margin-top: 0;
+			color: #fff;
+			text-transform: uppercase;
+			font-size: 0.9em;
+			border-bottom: 1px solid #0ff;
+			padding-bottom: 5px;
+		}
+
+		.coord-row {
+			display: flex;
+			justify-content: space-between;
+			margin: 5px 0;
+			align-items: center;
+		}
+
+		.coord-divider {
+			border-bottom: 1px solid #444;
+			margin: 10px 0 5px;
+			font-size: 0.8em;
+			color: #888;
+			text-transform: uppercase;
+		}
+
+		#svg-panel pre,
+		#builder-panel pre {
+			background: rgba(0, 0, 0, 0.5);
+			padding: 10px;
+			border-radius: 4px;
+			font-size: 10px;
+			color: #0ff;
+			overflow-x: auto;
+			margin-top: 10px;
+			border: 1px solid rgba(0, 255, 255, 0.2);
+			white-space: pre-wrap;
+			font-family: monospace;
+		}
+
+		.robot-control-group {
+			border-top: 1px solid rgba(0, 255, 255, 0.2);
+			padding-top: 10px;
+			margin-top: 10px;
+		}
+
+		.robot-control-group h4 {
+			margin: 0 0 8px 0;
+			font-size: 12px;
+			color: #fff;
+		}
+
+		.action-btn {
+			width: 100%;
+			background: #0ff;
+			color: #000;
+			border: none;
+			padding: 10px;
+			cursor: pointer;
+			font-weight: bold;
+			margin-top: 5px;
+			text-transform: uppercase;
+			font-size: 0.8rem;
+		}
+
+		.action-btn.secondary {
+			background: transparent;
+			border: 1px solid #0ff;
+			color: #0ff;
+		}
+
+		#btn-builder-toggle {
+			position: relative;
+			background: rgba(0, 0, 0, 0.7);
+			border: 1px solid #0ff;
+			border-radius: 50%;
+			width: 50px;
+			height: 50px;
+			font-size: 24px;
+			cursor: pointer;
+			z-index: 1000;
+			transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+			color: #0ff;
+		}
+
+		#btn-builder-toggle:hover {
+			background: #0ff;
+			color: #000;
+			box-shadow: 0 0 25px #0ff;
+			transform: scale(1.15) rotate(15deg);
+		}
+
+		#btn-robot-toggle {
+			position: relative;
+			background: rgba(20, 0, 20, 0.7);
+			border: 1px solid #f0f;
+			border-radius: 50%;
+			width: 50px;
+			height: 50px;
+			font-size: 24px;
+			cursor: pointer;
+			z-index: 1000;
+			transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+			color: #f0f;
+		}
+
+		#btn-robot-toggle:hover {
+			background: #f0f;
+			color: #000;
+			box-shadow: 0 0 25px #f0f;
+			transform: scale(1.15);
+		}
+
+		.tool-label-group {
+			position: fixed;
+			right: 30px;
+			z-index: 999;
+			display: flex;
+			align-items: center;
+			gap: 12px;
+		}
+
+		.tool-label-group.top {
+			bottom: 90px;
+		}
+
+		.tool-label-group.bottom {
+			bottom: 30px;
+		}
+
+		.tool-label {
+			background: rgba(0, 0, 0, 0.75);
+			backdrop-filter: blur(8px);
+			border: 1px solid rgba(255, 255, 255, 0.1);
+			border-radius: 10px;
+			padding: 10px 14px;
+			max-width: 220px;
+			font-size: 0.75rem;
+			color: var(--text-dim);
+			line-height: 1.5;
+			opacity: 0;
+			transform: translateX(10px);
+			transition: opacity 0.3s ease, transform 0.3s ease;
+			pointer-events: none;
+			position: absolute;
+			right: 62px;
+			white-space: normal;
+		}
+
+		.tool-label strong {
+			color: var(--text-main);
+			display: block;
+			margin-bottom: 3px;
+			font-size: 0.8rem;
+		}
+
+		.tool-label-group:hover .tool-label {
+			opacity: 1;
+			transform: translateX(0);
+		}
+
+		/* --- MONOLITHIC EDITOR STYLES --- */
+		.nudge-btn {
+			width: 25px;
+			height: 25px;
+			border: 1px solid #0ff;
+			background: rgba(0, 40, 40, 0.5);
+			color: #0ff;
+			cursor: pointer;
+			font-size: 14px;
+			padding: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 4px;
+			margin: 0 5px;
+		}
+
+		.nudge-btn:hover {
+			background: #0ff;
+			color: #000;
+		}
+
+		.tools-row {
+			display: flex;
+			gap: 5px;
+			margin-top: 10px;
+		}
+
+		.tool-btn {
+			flex: 1;
+			background: #222;
+			border: 1px solid #0ff;
+			color: #0ff;
+			cursor: pointer;
+			padding: 5px;
+			font-size: 0.8em;
+		}
+
+		.tool-btn.active {
+			background: #0ff;
+			color: #000;
+		}
+
+		.slide-row {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			margin: 5px 0;
+		}
+
+		.slide-val {
+			width: 30px;
+			text-align: right;
+			font-size: 0.8em;
+			color: #fff;
+		}
+
+		#svg-panel {
+			position: absolute;
+			top: 20px;
+			right: 20px;
+			width: 280px;
+			background: rgba(0, 0, 0, 0.85);
+			backdrop-filter: blur(12px);
+			border: 1px solid rgba(255, 255, 255, 0.1);
+			border-radius: 12px;
+			padding: 20px;
+			color: white;
+			font-family: 'Outfit', sans-serif;
+			z-index: 1002;
+			box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+		}
+
+		#svg-panel h3 {
+			margin: 0 0 15px 0;
+			font-size: 14px;
+			text-transform: uppercase;
+			letter-spacing: 2px;
+			color: #FF9900;
+		}
+
+		.control-group {
+			margin-bottom: 14px;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+		}
+
+		.control-group label {
+			font-size: 12px;
+			color: #bbb;
+			font-weight: 500;
+		}
+
+		.control-group input[type="range"] {
+			width: 60%;
+			accent-color: #FF9900;
+		}
+
+		.control-group input[type="color"] {
+			border: 1px solid #444;
+			width: 45px;
+			height: 28px;
+			background: #222;
+			cursor: pointer;
+			border-radius: 4px;
+		}
+
+		/* technical section overrides */
+		.section {
+			padding: 6rem 2rem;
+			max-width: 1200px;
+			margin: 0 auto;
+			background: var(--dark-bg);
+		}
+
+		.grid {
+			display: grid;
+			grid-template-columns: repeat(2, 1fr);
+			gap: 2rem;
+		}
+
+		@media (max-width: 600px) {
+			.grid {
+				grid-template-columns: 1fr;
+			}
+		}
+
+		.card {
+			background: var(--card-bg);
+			padding: 2.5rem;
+			border-radius: 24px;
+			border: 1px solid rgba(255, 255, 255, 0.05);
+		}
+
+		.step-num {
+			width: 40px;
+			height: 40px;
+			background: var(--primary);
+			color: black;
+			border-radius: 50%;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font-weight: 800;
+			margin-bottom: 1.5rem;
+		}
+	</style>
+</head>
+
+<body>
+
+	<section class="hero">
+		<div id="visualizer-container"></div>
+
+		<!-- UI PANELS FOR AESTHETIC FINE-TUNING -->
+		<div id="builder-panel" class="hidden">
+			<h3>Placement Mode</h3>
+			<p>Selected: <span id="builder-target">None</span></p>
+
+			<div class="coord-row">
+				<label>X:</label> <span id="val-x">0.00</span>
+			</div>
+			<div class="coord-row">
+				<label>Y:</label> <span id="val-y">0.00</span>
+			</div>
+			<div class="coord-row">
+				<label>Z:</label> <span id="val-z">0.00</span>
+			</div>
+
+			<div class="coord-divider">ROTATION (Deg)</div>
+			<div class="slide-row">
+				<label>X</label>
+				<button class="nudge-btn" data-axis="x" data-dir="-1">-</button>
+				<input type="range" id="rot-x" min="-180" max="180" step="1">
+				<button class="nudge-btn" data-axis="x" data-dir="1">+</button>
+				<span id="disp-rot-x" class="slide-val">0</span>
+			</div>
+			<div class="slide-row">
+				<label>Y</label>
+				<button class="nudge-btn" data-axis="y" data-dir="-1">-</button>
+				<input type="range" id="rot-y" min="-180" max="180" step="1">
+				<button class="nudge-btn" data-axis="y" data-dir="1">+</button>
+				<span id="disp-rot-y" class="slide-val">0</span>
+			</div>
+			<div class="slide-row">
+				<label>Z</label>
+				<button class="nudge-btn" data-axis="z" data-dir="-1">-</button>
+				<input type="range" id="rot-z" min="-180" max="180" step="1">
+				<button class="nudge-btn" data-axis="z" data-dir="1">+</button>
+				<span id="disp-rot-z" class="slide-val">0</span>
+			</div>
+
+			<div class="tools-row">
+				<button id="btn-mode-trans" class="tool-btn active">Move</button>
+				<button id="btn-mode-rot" class="tool-btn">Rotate</button>
+			</div>
+
+			<button id="btn-lock" class="action-btn">🔒 Lock Position</button>
+			<button id="btn-cancel" class="action-btn secondary">Cancel</button>
+
+			<div class="coord-divider">ALIGNMENT</div>
+			<div class="tools-row">
+				<button id="btn-snap" class="action-btn secondary" style="margin-top:0;">🧲 Snap to Grid</button>
+			</div>
+
+			<div class="coord-divider">PERSISTENCE</div>
+			<button id="btn-save-disk" class="action-btn" style="background:#44ff44; color:#000;">💾 Save to
+				Disk</button>
+
+			<div class="coord-divider">CAMERA POV</div>
+			<div class="coord-row"><label>Pos:</label> <span id="cam-pos">0, 0, 0</span></div>
+			<div class="coord-row"><label>Rot:</label> <span id="cam-rot">0, 0, 0</span></div>
+		</div>
+
+		<div class="tool-label-group top">
+			<div class="tool-label">
+				<strong>Robot Placement</strong>
+				Grid layout for easy placement to an affixed surface, with a mesh visualizer. A customization tool used to build this interface&mdash;available as a reference for anyone wanting to reuse what they see here.
+			</div>
+			<button id="btn-robot-toggle" title="Robot Placement">🤖</button>
+		</div>
+		<div class="tool-label-group bottom">
+			<div class="tool-label">
+				<strong>Logo Editor</strong>
+				Fine-tune scale, color, glow, bloom, and positioning to craft a polished logo. A customization tool used to build this interface&mdash;available as a reference for anyone wanting to reuse what they see here.
+			</div>
+			<button id="btn-builder-toggle" title="Logo Editor">🛠️</button>
+		</div>
+
+		<div id="svg-panel" style="display: none;">
+			<h3>Logo Editor</h3>
+			<div class="control-group"><label>Scale</label><input type="range" id="svg-scale" min="0.0005" max="0.005"
+					step="0.0001" value="0.0037"></div>
+			<div class="control-group"><label>Color</label><input type="color" id="svg-color" value="#f7cf02"></div>
+			<div class="control-group"><label>Glow</label><input type="range" id="svg-glow" min="0" max="5" step="0.1"
+					value="1.8"></div>
+			<div class="control-group"><label>Bloom Radius</label><input type="range" id="bloom-radius" min="0" max="2"
+					step="0.01" value="0.39"></div>
+			<div class="control-group"><label>Bloom Strength</label><input type="range" id="bloom-strength" min="0"
+					max="5" step="0.1" value="0.1"></div>
+			<div class="control-group"><label>Bloom Threshold</label><input type="range" id="bloom-threshold" min="0"
+					max="2.0" step="0.1" value="1.5"></div>
+			<div class="control-group"><label>Tilt</label><input type="range" id="svg-tilt" min="-0.2" max="0.2"
+					step="0.001" value="0.041"></div>
+			<div class="control-group"><label>Depth (Z)</label><input type="range" id="svg-z" min="-50" max="100"
+					step="0.1" value="-4.5"></div>
+			<div class="control-group"><label>Offset Y</label><input type="range" id="svg-y" min="0" max="3" step="0.1"
+					value="1.4"></div>
+			<div class="control-group"><label>Drift</label><input type="range" id="drift-speed" min="0" max="2"
+					step="0.1" value="1.4"></div>
+			<div class="control-group"><label>Beam Pos Y</label><input type="range" id="red-beam" min="0" max="1"
+					step="0.01" value="0.35"></div>
+			<div class="control-group"><label>Beam Feather</label><input type="range" id="beam-feather" min="0" max="1"
+					step="0.01" value="0.33"></div>
+
+			<div class="coord-divider">LIVE CONFIG SNIPPET</div>
+			<pre id="svg-readout">// Logo Config</pre>
+
+			<button id="btn-save-svg" class="action-btn">💾 Save Config (Persistent)</button>
+		</div>
+
+		<!-- Auth + connect overlay -->
+		<div id="auth-overlay" class="dd-overlay">
+			<div class="dd-card">
+				<h3>Sign in to dance</h3>
+				<p class="muted">HF OAuth lets your browser reach your Reachy Minis.</p>
+				<button id="btn-login" class="dd-btn primary">Sign in with Hugging Face</button>
+				<button id="btn-connect" class="dd-btn primary" hidden>Connect</button>
+				<button id="btn-refresh" class="dd-btn secondary" hidden>Refresh robot list</button>
+				<div id="auth-status" class="muted small">disconnected</div>
+				<div id="user-chip" class="dd-chip" hidden></div>
+			</div>
+		</div>
+
+		<!-- Robot picker overlay (shown after connect, when robots are available) -->
+		<div id="picker-overlay" class="dd-overlay" hidden>
+			<div class="dd-card">
+				<h3 id="picker-title">Pair your robots</h3>
+				<p class="muted" id="picker-subtitle">Wireless = Beat Bandit (right). Lite = Live Groove (left).</p>
+				<div class="picker-row">
+					<label>Live Groove</label>
+					<select id="pick-lite"></select>
+				</div>
+				<div class="picker-row">
+					<label>Beat Bandit</label>
+					<select id="pick-wireless"></select>
+				</div>
+				<button id="btn-pair" class="dd-btn primary">Start sessions</button>
+				<div id="picker-solo-hint" class="muted small" hidden>Only one robot detected — you can start with just that one.</div>
+				<div id="picker-status" class="muted small"></div>
+			</div>
+		</div>
+
+		<!-- Live Groove control panel (left) -->
+		<div id="lg-panel" class="dd-panel left" hidden>
+			<h4>Live Groove <span class="dd-tag cyan">Lite</span></h4>
+			<button id="lg-toggle" class="dd-btn primary">Start</button>
+			<div class="dd-stats">
+				<div>phase <b id="lg-phase">-</b></div>
+				<div>bpm <b id="lg-bpm">-</b></div>
+				<div>state <b id="lg-state">-</b></div>
+				<div>move <b id="lg-move">-</b></div>
+			</div>
+			<label class="dd-slider">
+				<span>noise floor</span>
+				<input type="range" id="lg-noise-floor" min="0.001" max="0.05" step="0.0005" value="0.005">
+				<b id="lg-noise-floor-val">0.005</b>
+			</label>
+		</div>
+
+		<!-- Beat Bandit control panel (right) -->
+		<div id="bb-panel" class="dd-panel right" hidden>
+			<h4>Beat Bandit <span class="dd-tag white">Wireless</span></h4>
+			<div class="dd-search">
+				<input type="text" id="bb-query" placeholder="song or artist" autocomplete="off">
+				<button id="bb-search" class="dd-btn secondary">Search</button>
+			</div>
+			<ul id="bb-results" class="dd-results"></ul>
+			<div id="bb-status" class="dd-status" hidden></div>
+			<audio id="bb-audio" controls preload="auto" playsinline crossorigin="anonymous"></audio>
+			<button id="bb-toggle" class="dd-btn primary" disabled>Dance!</button>
+			<div class="dd-stats">
+				<div>tempo <b id="bb-tempo">-</b></div>
+				<div>block <b id="bb-block">-</b></div>
+				<div>energy <b id="bb-energy">-</b></div>
+				<div>move <b id="bb-move">-</b></div>
+			</div>
+		</div>
+	</section>
+
+	<section class="section">
+		<h2 class="section-title">How it Works</h2>
+		<div class="grid">
+			<div class="card">
+				<div class="step-num">1</div>
+				<h3>Start the App</h3>
+				<p>Launch Reachy Dance Duo from the dashboard. No API keys, no cloud inference, no heavy
+					processing&mdash;everything runs locally on the robot.</p>
+			</div>
+			<div class="card">
+				<div class="step-num">2</div>
+				<h3>Pick a Mode</h3>
+				<p>Choose <strong>Live Groove</strong> for real-time analysis of ambient music with targeted beat
+					detection, or <strong>Beat Bandit</strong> where Reachy sails the high seas of YouTube to
+					procure your content.</p>
+			</div>
+			<div class="card">
+				<div class="step-num">3</div>
+				<h3>Play Your Music</h3>
+				<p>In <strong>Live Groove</strong>, tempo and beats are measured live as music plays. In
+					<strong>Beat Bandit</strong>, the entire song is analyzed and a full dance sequence is
+					choreographed before playback begins.</p>
+			</div>
+			<div class="card">
+				<div class="step-num">4</div>
+				<h3>Dance!</h3>
+				<p>Sit back and watch Reachy Mini move. The choreography plays in sync with the audio for smooth,
+					expressive movements.</p>
+			</div>
+		</div>
+	</section>
+
+	<footer>
+		<p style="margin-bottom: 0.5rem;">If you enjoy this app, a like on the Space helps us compete in the <strong>Nvidia GTC Contest</strong>!</p>
+		<p>&copy; 2026 Pollen Robotics. Built for Reachy Mini.</p>
+	</footer>
+
+	<script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+	<script type="module">
+		import * as THREE from 'three';
+		import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+		import { TransformControls } from 'three/addons/controls/TransformControls.js';
+		import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+		import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+		import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+		import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+		import { ReachyRobot } from './js/reachy_robot.js';
+		import { MusicNoteSystem, SVG3DSystem, getRainbowColor } from './js/visualizer.js';
+		import { ReachyMini } from 'https://cdn.jsdelivr.net/gh/pollen-robotics/reachy_mini@v1.7.3/js/reachy-mini.js';
+		import { DuoConnection } from './js/duo_connection.js';
+		import { LiveGroove } from './js/live_groove.js';
+		import { BeatBandit } from './js/beat_bandit.js';
+		import { AnalyzerClient } from './js/analyzer_client.js';
+		import { getBreathingFrame } from './js/idle_breathing.js';
+		import { applyCyberBranding } from './js/cyber_branding.js';
+
+		const container = document.getElementById('visualizer-container');
+		const scene = new THREE.Scene();
+
+		const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+		camera.position.set(-0.04, -0.62, 3.95);
+
+		const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+		renderer.setSize(window.innerWidth, window.innerHeight);
+		renderer.setPixelRatio(window.devicePixelRatio);
+		renderer.setClearColor(0x000000, 1);
+		renderer.toneMapping = THREE.ReinhardToneMapping;
+		container.appendChild(renderer.domElement);
+
+		const renderScene = new RenderPass(scene, camera);
+		const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+		bloomPass.threshold = 1.5;
+		bloomPass.strength = 0.3;
+		bloomPass.radius = 0.39;
+		const outputPass = new OutputPass();
+
+		const composer = new EffectComposer(renderer);
+		composer.addPass(renderScene);
+		composer.addPass(bloomPass);
+		composer.addPass(outputPass);
+
+		const controls = new OrbitControls(camera, renderer.domElement);
+		controls.target.set(0, -1.0, 0); // Center focus between robots
+		controls.update();
+
+		const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+		scene.add(ambientLight);
+		const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
+		keyLight.position.set(5, 10, 7);
+		scene.add(keyLight);
+
+		const svgSystem = new SVG3DSystem(scene);
+		svgSystem.load('assets/dance_duo.svg');
+		const noteSystem = new MusicNoteSystem(scene);
+
+		// Visualizer Blocks
+		const visualizerGroup = new THREE.Group();
+		scene.add(visualizerGroup);
+		const blocks = [];
+
+		// --- VISUALIZER CONSTANTS (Horseshoe) ---
+		const columns = 96;
+		const panelsTurn = 32;
+		const panelsLeg = 32;
+		const turnRadius = 25;
+		const legLength = 80;
+		const turnCenterZ = -50;
+		const panelGeometry = new THREE.PlaneGeometry(2.4, 1.25);
+		const mapping = [11, 9, 7, 5, 3, 1, 0, 2, 4, 6, 8, 10];
+
+		for (let col = 0; col < columns; col++) {
+			const columnBlocks = [];
+			let x, z, rotY;
+
+			if (col < panelsLeg) {
+				// Left Leg
+				x = -turnRadius;
+				const legProgress = (panelsLeg - 1 - col) / panelsLeg;
+				z = turnCenterZ + legProgress * legLength;
+				rotY = Math.PI / 2;
+			} else if (col < panelsLeg + panelsTurn) {
+				// Turn (Horseshoe)
+				const turnCol = col - panelsLeg;
+				const pct = turnCol / (panelsTurn - 1);
+				const angle = Math.PI * (1 - pct);
+				x = turnRadius * Math.cos(angle);
+				z = turnCenterZ - turnRadius * Math.sin(angle);
+				rotY = angle - Math.PI / 2;
+			} else {
+				// Right Leg
+				const rightCol = col - (panelsLeg + panelsTurn);
+				const legProgress = rightCol / panelsLeg;
+				x = turnRadius;
+				z = turnCenterZ + legProgress * legLength;
+				rotY = -Math.PI / 2;
+			}
+
+			for (let row = 0; row < 12; row++) {
+				const mat = new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0x000000, transparent: true, opacity: 0.05, side: THREE.FrontSide });
+				const block = new THREE.Mesh(panelGeometry, mat);
+				block.position.set(x, (row - 6) * 1.28, z);
+				block.rotation.y = rotY;
+				visualizerGroup.add(block);
+				columnBlocks.push({ mesh: block, material: mat });
+			}
+			blocks.push(columnBlocks);
+		}
+		visualizerGroup.scale.set(0.2, 0.2, 0.2);
+		visualizerGroup.position.set(0, 0, -5);
+
+		const rowPeaks = Array.from({ length: 12 }, () => ({ left: 40.5, right: 54.5 }));
+
+		// --- Shared AudioContext + monkey-patched getUserMedia ---
+		// The ReachyMini SDK's enableMicrophone:true causes it to call getUserMedia
+		// to acquire an outbound audio track for WebRTC. We intercept that call so
+		// the SDK gets a synthetic stream we control. Anything connected to
+		// robotAudioDest plays through the robot's speaker. (Borrowed from
+		// reachy-dance-duo-js / Anne-Charlotte's pattern.)
+		const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+		const robotAudioDest = audioContext.createMediaStreamDestination();
+		let bbAudioElSource = null, bbMasterGain = null, bbLocalGain = null;
+		let bandAnalyser = null, bandDataArray = null;
+		let audioStarted = false;
+
+		function initAudioRouting() {
+			if (bbAudioElSource) return;
+			try {
+				const bbAudio = document.getElementById('bb-audio');
+				bbAudioElSource = audioContext.createMediaElementSource(bbAudio);
+				bbMasterGain = audioContext.createGain();
+				bbMasterGain.gain.value = 2.0;
+				bbLocalGain = audioContext.createGain();
+				bbLocalGain.gain.value = 0.0; // Keep local Mac playback silent
+				bbAudioElSource.connect(bbMasterGain);
+				bbMasterGain.connect(robotAudioDest);
+				bbMasterGain.connect(bbLocalGain);
+				// Do not connect to destination to prevent Mac playback
+
+				// Tap the BB audio path for the horseshoe band visualizer.
+				bandAnalyser = audioContext.createAnalyser();
+				bandAnalyser.fftSize = 2048;
+				bbMasterGain.connect(bandAnalyser);
+				bandDataArray = new Uint8Array(bandAnalyser.frequencyBinCount);
+				audioStarted = true;
+			} catch (e) {
+				console.warn('audio routing failed', e);
+			}
+		}
+
+		const _origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+		const _gumOverride = function (constraints) {
+			const stack = new Error().stack || '';
+			// Only intercept and override when called from the ReachyMini SDK
+			if (stack.includes('reachy-mini.js') || stack.includes('ReachyMini')) {
+				if (constraints && constraints.audio) {
+					console.log('[Audio Routing] Routing synthetic Beat Bandit stream to Wireless robot');
+					return Promise.resolve(robotAudioDest.stream);
+				}
+			}
+			console.log('[Audio Routing] Routing real microphone stream to caller');
+			return _origGUM(constraints);
+		};
+		try {
+			navigator.mediaDevices.getUserMedia = _gumOverride;
+			if (navigator.mediaDevices.getUserMedia !== _gumOverride) {
+				Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: _gumOverride, configurable: true, writable: true });
+			}
+		} catch (e) { console.warn('failed to monkey-patch getUserMedia', e); }
+		initAudioRouting();
+
+		async function ensureAudioContext() {
+			if (audioContext.state === 'suspended') await audioContext.resume();
+		}
+
+		// --- On-screen robots (left = Lite/Live Groove, right = Wireless/Beat Bandit) ---
+		const leftRobot = new ReachyRobot('Left', 0, false);
+		const rightRobot = new ReachyRobot('Right', 0, true);
+		let startTime = 0;
+
+		async function startAnimation() {
+			try {
+				await Promise.all([
+					leftRobot.load('reachy_mini.xml'),
+					rightRobot.load('reachy_mini.xml')
+				]);
+				scene.add(leftRobot.group);
+				scene.add(rightRobot.group);
+
+				// --- DEFINITIVE COORDINATES (From Screenshots) ---
+				leftRobot.group.position.set(-1.00, -1.45, -1.00);
+				leftRobot.group.rotation.set(THREE.MathUtils.degToRad(-90), THREE.MathUtils.degToRad(0), THREE.MathUtils.degToRad(-45));
+				rightRobot.group.position.set(0.80, -1.45, -0.70);
+				rightRobot.group.rotation.set(THREE.MathUtils.degToRad(-90), THREE.MathUtils.degToRad(1), THREE.MathUtils.degToRad(-135));
+
+				// Cyan/magenta branding on the left (Lite/Live Groove) robot only.
+				applyCyberBranding(leftRobot);
+
+				startTime = performance.now();
+				animate();
+			} catch (e) { console.error(e); }
+		}
+
+		// --- DuoConnection: two SDK instances managed together ---
+		const duo = new DuoConnection(ReachyMini);
+		const $ = (id) => document.getElementById(id);
+
+		function setAuthStatus(t) { $('auth-status').textContent = t; }
+		let signalingReady = { lite: false, wireless: false };
+
+		duo.addEventListener('side-connected', (e) => {
+			signalingReady[e.detail.side] = true;
+			if (signalingReady.lite && signalingReady.wireless) {
+				setAuthStatus('signaling ready — discovering robots...');
+			} else {
+				setAuthStatus('connecting...');
+			}
+		});
+		duo.addEventListener('side-disconnected', (e) => {
+			signalingReady[e.detail.side] = false;
+			setAuthStatus(`${e.detail.side} disconnected: ${e.detail.reason || ''}`);
+		});
+		duo.addEventListener('side-streaming', (e) => setAuthStatus(`${e.detail.side} streaming`));
+		duo.addEventListener('side-session-stopped', (e) => setAuthStatus(`${e.detail.side} session ended`));
+		duo.addEventListener('side-error', (e) => {
+			console.warn(`[duo:${e.detail.side}] ${e.detail.source}: ${e.detail.error}`);
+			setAuthStatus(`error: ${e.detail.error}`);
+		});
+
+		// Update the picker dropdowns whenever a side discovers robots.
+		const discovered = { lite: [], wireless: [] };
+		let robotsChangedCount = 0;
+		duo.addEventListener('robots-changed', (e) => {
+			robotsChangedCount++;
+			discovered[e.detail.side] = e.detail.robots || [];
+			const allCount = new Set([...discovered.lite, ...discovered.wireless].map(r => r.id)).size;
+			console.log(`[ui] robots-changed from ${e.detail.side}: ${e.detail.robots.length} raw, ${allCount} unique total (event #${robotsChangedCount})`);
+			if (allCount === 0) {
+				setAuthStatus(`signaling connected — 0 robots found (waiting...)`);
+				$('btn-refresh').hidden = false;
+			}
+			renderPicker();
+		});
+
+		// Refresh button: re-query robot list from signaling server
+		$('btn-refresh').addEventListener('click', async () => {
+			$('btn-refresh').disabled = true;
+			setAuthStatus('requesting robot list...');
+			try {
+				await duo.refreshRobots();
+			} catch (e) {
+				setAuthStatus(`refresh failed: ${e.message}`);
+			}
+			$('btn-refresh').disabled = false;
+		});
+
+		const SIDE_MODE = { lite: 'Live Groove', wireless: 'Beat Bandit' };
+		let soloTimer = null;
+		const SOLO_DELAY_MS = 5000;
+		let pickerInitialized = false;
+
+		function robotLabel(r) {
+			return r.meta?.name || r.id?.slice(0, 8) || 'robot';
+		}
+
+		function renderPicker() {
+			if (autoStart.started) return;
+			const seen = new Set();
+			const allRobots = [...discovered.lite, ...discovered.wireless]
+				.filter(r => { if (seen.has(r.id)) return false; seen.add(r.id); return true; });
+
+			if (allRobots.length === 0) {
+				$('btn-refresh').hidden = false;
+				return;
+			}
+			$('btn-refresh').hidden = true;
+
+			// Populate both dropdowns with all discovered robots + a "None" option
+			for (const side of ['lite', 'wireless']) {
+				const sel = $(`pick-${side}`);
+				if (!sel) continue;
+				const prev = sel.value;
+				sel.innerHTML = '';
+				const noneOpt = document.createElement('option');
+				noneOpt.value = '';
+				noneOpt.textContent = `— skip ${SIDE_MODE[side]} —`;
+				sel.appendChild(noneOpt);
+				for (const r of allRobots) {
+					const opt = document.createElement('option');
+					opt.value = r.id;
+					opt.textContent = robotLabel(r);
+					sel.appendChild(opt);
+				}
+				if (prev && allRobots.some(r => r.id === prev)) sel.value = prev;
+			}
+
+			// Two robots: pre-select one in each dropdown, auto-start
+			if (allRobots.length >= 2) {
+				if (soloTimer) { clearTimeout(soloTimer); soloTimer = null; }
+				$('pick-lite').value = allRobots[0].id;
+				$('pick-wireless').value = allRobots[1].id;
+				autoStart(allRobots[0].id, allRobots[1].id);
+				return;
+			}
+
+			// One robot: show picker, let user choose which mode, auto-start after delay
+			$('picker-overlay').hidden = false;
+			if (!pickerInitialized) {
+				$('pick-lite').value = allRobots[0].id;
+				$('pick-wireless').value = '';
+				$('picker-title').textContent = `1 robot found: ${robotLabel(allRobots[0])}`;
+				$('picker-subtitle').textContent = 'Pick which mode to use, or wait for a second robot.';
+				$('picker-solo-hint').hidden = false;
+				$('btn-pair').textContent = 'Start';
+				pickerInitialized = true;
+			}
+
+			if (!soloTimer && !autoStart.started) {
+				soloTimer = setTimeout(() => {
+					soloTimer = null;
+					if (autoStart.started) return;
+					const liteId = $('pick-lite').value;
+					const wirelessId = $('pick-wireless').value;
+					if (liteId || wirelessId) autoStart(liteId || null, wirelessId || null);
+				}, SOLO_DELAY_MS);
+			}
+		}
+
+		async function autoStart(liteId, wirelessId) {
+			if (autoStart.started) return;
+			// Same robot can't be in both sessions — pick lite if both point to same ID
+			if (liteId && wirelessId && liteId === wirelessId) {
+				console.log('[ui] autoStart: same robot in both slots, using lite only');
+				wirelessId = null;
+			}
+			autoStart.started = true;
+			const status = $('picker-status');
+			if (status) status.textContent = 'starting sessions...';
+			try {
+				const promises = [];
+				if (liteId) promises.push(duo.startSession('lite', liteId));
+				if (wirelessId) promises.push(duo.startSession('wireless', wirelessId));
+				await Promise.all(promises);
+				$('picker-overlay').hidden = true;
+				$('auth-overlay').hidden = true;
+				if (liteId) $('lg-panel').hidden = false;
+				if (wirelessId) $('bb-panel').hidden = false;
+			} catch (e) {
+				autoStart.started = false;
+				$('picker-overlay').hidden = false;
+				if (status) status.textContent = `failed: ${e.message}`;
+				await Promise.all([
+					duo.stopSession('lite'),
+					duo.stopSession('wireless'),
+				]).catch(() => {});
+			}
+		}
+
+		// Sign-in button
+		$('btn-login').addEventListener('click', () => duo.login());
+
+		// Connect button (after auth)
+		$('btn-connect').addEventListener('click', async () => {
+			$('btn-connect').disabled = true;
+			setAuthStatus('connecting...');
+			await duo.connect();
+			// Immediately check the REST API for robots (richer than SSE list)
+			try {
+				const owned = await duo.lite.instance._fetchOwnedRobots({ filterBusy: false });
+				console.log(`[ui] /api/robot-status after connect: ${owned.length} robot(s)`, JSON.stringify(owned, null, 2));
+				if (owned.length > 0) {
+					const robots = owned.map(r => ({ id: r.id, meta: { name: r.name, ...r.meta } }));
+					discovered.lite = robots;
+					renderPicker();
+				} else {
+					setAuthStatus('connected — 0 robots registered to your account');
+					$('btn-refresh').hidden = false;
+				}
+			} catch (e) {
+				console.warn('[ui] robot-status check failed:', e);
+			}
+		});
+
+		// Pair button (fallback for ambiguous picks; dropdowns are transport-filtered so liteId and wirelessId are always distinct robots)
+		$('btn-pair').addEventListener('click', async () => {
+			if (soloTimer) { clearTimeout(soloTimer); soloTimer = null; }
+			const liteId = $('pick-lite').value;
+			const wirelessId = $('pick-wireless').value;
+			if (!liteId && !wirelessId) { $('picker-status').textContent = 'pick at least one robot'; return; }
+			autoStart.started = true;
+			$('picker-status').textContent = 'starting sessions...';
+			try {
+				if (liteId) await duo.startSession('lite', liteId);
+				if (wirelessId) await duo.startSession('wireless', wirelessId);
+				$('picker-overlay').hidden = true;
+				$('auth-overlay').hidden = true;
+				if (liteId) $('lg-panel').hidden = false;
+				if (wirelessId) $('bb-panel').hidden = false;
+			} catch (e) {
+				$('picker-status').textContent = `failed: ${e.message}`;
+				await Promise.all([
+					duo.stopSession('lite'),
+					duo.stopSession('wireless'),
+				]).catch(() => {});
+			}
+		});
+
+		// --- Live Groove ---
+		let liveGroove = null;
+		const lgNoiseFloor = $('lg-noise-floor');
+		const lgNoiseFloorVal = $('lg-noise-floor-val');
+		lgNoiseFloor.addEventListener('input', () => {
+			const v = parseFloat(lgNoiseFloor.value);
+			lgNoiseFloorVal.textContent = v.toFixed(4);
+			if (liveGroove) liveGroove.updateConfig({ volumeGateThreshold: v });
+		});
+		$('lg-toggle').addEventListener('click', async () => {
+			const btn = $('lg-toggle');
+			const lite = duo.sideOf('lite');
+			if (liveGroove == null) {
+				if (!lite.streaming || !lite.robotStream) { $('lg-state').textContent = 'no Lite session'; return; }
+				btn.disabled = true;
+				try {
+					await ensureAudioContext();
+					liveGroove = new LiveGroove({
+						robot: lite.instance,
+						audioContext,
+						robotStream: lite.robotStream,
+						config: { volumeGateThreshold: parseFloat(lgNoiseFloor.value) },
+					});
+					liveGroove.addEventListener('bpmStateChange', (e) => { $('lg-state').textContent = e.detail.to; });
+					liveGroove.addEventListener('moveStarted', (e) => { $('lg-move').textContent = e.detail.name; });
+					liveGroove.addEventListener('tick', (e) => {
+						$('lg-phase').textContent = e.detail.phase;
+						$('lg-bpm').textContent = liveGroove.bpmTracker.smoothedBpm.toFixed(1);
+					});
+					await liveGroove.start();
+					btn.textContent = 'Stop';
+				} catch (e) {
+					console.error('Live Groove start failed', e);
+					liveGroove = null;
+				}
+				btn.disabled = false;
+			} else {
+				await liveGroove.stop();
+				liveGroove = null;
+				btn.textContent = 'Start';
+				$('lg-phase').textContent = '-'; $('lg-bpm').textContent = '-'; $('lg-state').textContent = '-';
+			}
+		});
+
+		// --- Beat Bandit ---
+		const analyzer = new AnalyzerClient();
+		let beatBandit = null, currentAnalysis = null;
+		$('bb-search').addEventListener('click', doSearch);
+		$('bb-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+		async function doSearch() {
+			const q = $('bb-query').value.trim();
+			if (!q) return;
+			const ul = $('bb-results');
+			$('bb-status').hidden = true;
+			ul.innerHTML = `<li class="muted">searching...</li>`;
+			try {
+				const tracks = await analyzer.search(q, 8);
+				ul.innerHTML = '';
+				if (!tracks.length) { ul.innerHTML = `<li class="muted">no results</li>`; return; }
+				for (const t of tracks) {
+					if (!t.videoId) continue;
+					const li = document.createElement('li');
+					const thumb = (t.thumbnails || [])[0]?.url;
+					li.innerHTML = `${thumb ? `<img src="${thumb}" alt="" />` : ''}
+						<div class="meta"><div>${t.title}</div><div>${(t.artists || []).map(a => a.name).join(', ')}</div></div>`;
+					li.addEventListener('click', () => analyzeTrack(t));
+					ul.appendChild(li);
+				}
+			} catch (e) {
+				ul.innerHTML = `<li class="err">${e.message}</li>`;
+			}
+		}
+		async function analyzeTrack(track) {
+			$('bb-status').hidden = false;
+			$('bb-status').className = 'dd-status pulse';
+			$('bb-status').innerHTML = `<b>Analyzing ${track.title}...</b>`;
+			$('bb-toggle').disabled = true;
+			try {
+				const a = await analyzer.analyze(track.videoId);
+				currentAnalysis = a;
+				$('bb-tempo').textContent = a.tempo.toFixed(1) + ' BPM';
+				$('bb-audio').src = analyzer.audioUrl(a.audio_url);
+				$('bb-audio').load();
+				$('bb-toggle').disabled = false;
+				$('bb-status').className = 'dd-status success';
+				$('bb-status').innerHTML = `<b>Ready: ${a.tempo.toFixed(1)} BPM</b>`;
+			} catch (e) {
+				$('bb-status').className = 'dd-status err-status';
+				$('bb-status').innerHTML = `<b>Analysis failed:</b> ${e.message}`;
+			}
+		}
+		$('bb-toggle').addEventListener('click', async () => {
+			const btn = $('bb-toggle');
+			const audio = $('bb-audio');
+			const wireless = duo.sideOf('wireless');
+			if (beatBandit == null) {
+				if (!wireless.streaming) { $('bb-status').hidden = false; $('bb-status').className = 'dd-status err-status'; $('bb-status').textContent = 'no Wireless session'; return; }
+				btn.disabled = true;
+				try {
+					await ensureAudioContext();
+					try { wireless.instance.setMicMuted(false); } catch {}
+					beatBandit = new BeatBandit({ robot: wireless.instance, audioElement: audio, analysis: currentAnalysis });
+					beatBandit.addEventListener('blockEntered', (e) => {
+						$('bb-block').textContent = e.detail.block;
+						$('bb-energy').textContent = e.detail.energy;
+						$('bb-move').textContent = e.detail.move + (e.detail.mirrored ? ' (M)' : '');
+					});
+					await beatBandit.start();
+					await audio.play();
+					btn.textContent = 'Stop';
+				} catch (e) {
+					console.error('Beat Bandit start failed', e);
+					beatBandit?.stop(); beatBandit = null;
+				}
+				btn.disabled = false;
+			} else {
+				beatBandit.stop();
+				audio.pause(); audio.currentTime = 0;
+				beatBandit = null;
+				try { wireless.instance.setMicMuted(true); } catch {}
+				btn.textContent = 'Dance!';
+			}
+		});
+
+		// --- Boot the auth flow ---
+		(async () => {
+			const ok = await duo.bootstrap();
+			if (ok) {
+				$('user-chip').textContent = duo.username || 'you';
+				$('user-chip').hidden = false;
+				$('btn-login').hidden = true;
+				$('btn-connect').hidden = false;
+				setAuthStatus('authenticated');
+			} else {
+				setAuthStatus('please sign in');
+			}
+		})();
+
+		function animate() {
+			requestAnimationFrame(animate);
+			const time = performance.now();
+			const tSec = (time - startTime) / 1000;
+
+			// Per-side pose source: SDK state when streaming, breathing otherwise.
+			const lite = duo.sideOf('lite');
+			const wireless = duo.sideOf('wireless');
+			const leftFrame = (lite.streaming && lite.lastFrame) ? lite.lastFrame : getBreathingFrame(tSec, 'left');
+			const rightFrame = (wireless.streaming && wireless.lastFrame) ? wireless.lastFrame : getBreathingFrame(tSec, 'right');
+			leftRobot.applyPose(leftFrame);
+			rightRobot.applyPose(rightFrame);
+
+			const bandVolumes = new Array(12).fill(0);
+			if (audioStarted && bandAnalyser) {
+				bandAnalyser.getByteFrequencyData(bandDataArray);
+				const dataArray = bandDataArray;
+				const binSize = Math.floor(dataArray.length / 12);
+				for (let r = 0; r < 12; r++) {
+					let sum = 0;
+					for (let i = 0; i < binSize; i++) sum += dataArray[r * binSize + i];
+					// Gain Boost (1.6x)
+					bandVolumes[r] = Math.min(((sum / binSize) / 255) * 1.6, 1.0);
+				}
+				// Dampen dominant bass (Exact Backup Values)
+				bandVolumes[0] *= 0.6;
+				bandVolumes[1] *= 0.7;
+				bandVolumes[2] *= 0.8;
+			}
+
+			if (noteSystem) {
+				// Spawn Check (using calculated bandVolumes)
+				// Highs are roughly indexes 8-11
+				const highVol = (bandVolumes[9] + bandVolumes[10] + bandVolumes[11]) / 3;
+
+				if (highVol > 0.4 && Math.random() < 0.075) {
+					const isLeft = Math.random() > 0.5;
+					const sourceRobot = isLeft ? leftRobot : rightRobot;
+					if (sourceRobot && sourceRobot.group) {
+						const spawnPos = sourceRobot.group.position.clone();
+						spawnPos.y += 0.4;
+						const color = new THREE.Color(0xffffff); // Force White
+						noteSystem.spawn(spawnPos, color);
+					}
+				}
+			}
+
+			const centerCol = 47.5;
+			const baseHalfWidth = 7;
+			const maxHalfWidth = 48;
+
+			const rowVolumes = new Array(12).fill(0);
+			for (let r = 0; r < 12; r++) {
+				rowVolumes[r] = bandVolumes[mapping[r]] || 0;
+			}
+
+			for (let r = 0; r < 12; r++) {
+				const rowVol = rowVolumes[r];
+				// Elastic Expansion
+				const expansion = rowVol * (maxHalfWidth - baseHalfWidth);
+				const currentHalfWidth = baseHalfWidth + expansion;
+
+				const startColLimit = Math.floor(centerCol - currentHalfWidth);
+				const endColLimit = Math.ceil(centerCol + currentHalfWidth);
+
+				// Leader Peak Decay Logic (Exact Backup)
+				if (rowPeaks[r].left > startColLimit) rowPeaks[r].left -= 1.0;
+				if (rowPeaks[r].left < startColLimit) rowPeaks[r].left = startColLimit;
+
+				if (rowPeaks[r].right < endColLimit) rowPeaks[r].right += 1.0;
+				if (rowPeaks[r].right > endColLimit) rowPeaks[r].right = endColLimit;
+
+				for (let c = 0; c < columns; c++) {
+					const blockData = blocks[c][r];
+					const block = blockData.mesh;
+					const mat = blockData.material;
+
+					let isLit = false;
+					let isLeader = false;
+					let colorScalar = 0;
+
+					if (c >= startColLimit && c <= endColLimit) {
+						isLit = true;
+						colorScalar = (c - startColLimit) / (endColLimit - startColLimit || 1);
+					}
+
+					if (c === Math.floor(rowPeaks[r].left)) { isLeader = true; isLit = true; colorScalar = 0.0; }
+					if (c === Math.floor(rowPeaks[r].right)) { isLeader = true; isLit = true; colorScalar = 1.0; }
+
+					if (isLit) {
+						const color = getRainbowColor(colorScalar);
+						mat.opacity = 0.9;
+						mat.emissive.copy(color);
+						// CAP emission at 0.9 to stay BELOW the Bloom Threshold (1.1)
+						const rawIntensity = 0.8 + (rowVol * 0.5);
+						mat.emissiveIntensity = Math.min(rawIntensity, 0.9);
+
+						if (isLeader) {
+							mat.emissiveIntensity = 0.95;
+						}
+					} else {
+						mat.opacity = 0.05;
+						mat.emissive.setHex(0x000000);
+						mat.emissiveIntensity = 0;
+					}
+				}
+			}
+
+			if (noteSystem) noteSystem.update(0.016);
+			if (svgSystem) svgSystem.update(0.016);
+			composer.render();
+		}
+
+		function setupSVGEditor() {
+			const inputs = {
+				scale: document.getElementById('svg-scale'),
+				color: document.getElementById('svg-color'),
+				glow: document.getElementById('svg-glow'),
+				radius: document.getElementById('bloom-radius'),
+				strength: document.getElementById('bloom-strength'),
+				threshold: document.getElementById('bloom-threshold'),
+				tilt: document.getElementById('svg-tilt'),
+				z: document.getElementById('svg-z'),
+				y: document.getElementById('svg-y'),
+				drift: document.getElementById('drift-speed'),
+				redBeam: document.getElementById('red-beam'),
+				beamFeather: document.getElementById('beam-feather')
+			};
+			const readout = document.getElementById('svg-readout');
+			const toggleBtn = document.getElementById('btn-builder-toggle');
+			const panel = document.getElementById('svg-panel');
+
+			toggleBtn.addEventListener('click', () => {
+				panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+				document.getElementById('builder-panel').classList.add('hidden'); // Close other panel
+			});
+
+			function updateSVG() {
+				bloomPass.radius = parseFloat(inputs.radius.value);
+				bloomPass.strength = parseFloat(inputs.strength.value);
+				bloomPass.threshold = parseFloat(inputs.threshold.value);
+				if (!svgSystem?.loadedMesh) return;
+				svgSystem.config.z = parseFloat(inputs.z.value);
+				svgSystem.config.y = parseFloat(inputs.y.value);
+				svgSystem.config.drift = parseFloat(inputs.drift.value);
+				svgSystem.config.redBeam = parseFloat(inputs.redBeam.value);
+				svgSystem.config.beamFeather = parseFloat(inputs.beamFeather.value);
+				svgSystem.loadedMesh.scale.setScalar(parseFloat(inputs.scale.value));
+				svgSystem.loadedMesh.rotation.z = parseFloat(inputs.tilt.value);
+				svgSystem.updateTexture(inputs.color.value, svgSystem.config.redBeam, svgSystem.config.beamFeather);
+				const g = parseFloat(inputs.glow.value);
+				svgSystem.loadedMesh.traverse(n => {
+					if (n.isPointLight) n.intensity = g * 6;
+					if (n.isMesh && n.name === "CoreLetter") n.material.emissiveIntensity = g;
+				});
+				readout.innerText = `svgSystem.config = ${JSON.stringify(svgSystem.config, null, 2)};\nbloomPass.threshold = ${bloomPass.threshold};\nbloomPass.strength = ${bloomPass.strength};\nbloomPass.radius = ${bloomPass.radius};`;
+			}
+			Object.values(inputs).forEach(i => i.addEventListener('input', updateSVG));
+			window.addEventListener('svg-loaded', () => setTimeout(updateSVG, 100));
+		}
+
+		// --- BUILDER / PLACEMENT MODE ---
+		let transformControl;
+		let builderModeActive = false;
+		let selectedRobotName = null;
+		let ghostObject = null;
+		let originalObject = null;
+		let gridHelper = null;
+		let snapGroup = null;
+		let highlightedSnap = null;
+
+		const raycaster = new THREE.Raycaster();
+		const mouse = new THREE.Vector2();
+
+		function setupRobotEditor() {
+			// UI Elements
+			const builderPanel = document.getElementById('builder-panel');
+			const builderToggle = document.getElementById('btn-robot-toggle'); // Using Robot Toggle for this
+
+			const lockBtn = document.getElementById('btn-lock');
+			const cancelBtn = document.getElementById('btn-cancel');
+
+			// Rotation Sliders
+			const sliderRotX = document.getElementById('rot-x');
+			const sliderRotY = document.getElementById('rot-y');
+			const sliderRotZ = document.getElementById('rot-z');
+
+			const btnMove = document.getElementById('btn-mode-trans');
+			const btnRot = document.getElementById('btn-mode-rot');
+			const btnSnap = document.getElementById('btn-snap');
+			const btnSave = document.getElementById('btn-save-disk');
+
+			// Toggle Panel Logic
+			builderToggle.addEventListener('click', () => {
+				const isHidden = builderPanel.classList.contains('hidden');
+				if (isHidden) {
+					builderPanel.classList.remove('hidden');
+					document.getElementById('svg-panel').style.display = 'none';
+					initBuilderMode();
+				} else {
+					exitBuilderMode(); // Also closes panel
+				}
+			});
+
+			// Gizmo Mode Toggles
+			btnMove.addEventListener('click', () => {
+				if (transformControl) transformControl.setMode('translate');
+				btnMove.classList.add('active');
+				btnRot.classList.remove('active');
+			});
+			btnRot.addEventListener('click', () => {
+				if (transformControl) transformControl.setMode('rotate');
+				btnRot.classList.add('active');
+				btnMove.classList.remove('active');
+			});
+
+			// Slider Logic
+			function onSliderChange() {
+				if (!ghostObject) return;
+				const rx = parseFloat(sliderRotX.value);
+				const ry = parseFloat(sliderRotY.value);
+				const rz = parseFloat(sliderRotZ.value);
+
+				ghostObject.rotation.x = THREE.MathUtils.degToRad(rx);
+				ghostObject.rotation.y = THREE.MathUtils.degToRad(ry);
+				ghostObject.rotation.z = THREE.MathUtils.degToRad(rz);
+
+				document.getElementById('disp-rot-x').innerText = rx.toFixed(0);
+				document.getElementById('disp-rot-y').innerText = ry.toFixed(0);
+				document.getElementById('disp-rot-z').innerText = rz.toFixed(0);
+			}
+			sliderRotX.addEventListener('input', onSliderChange);
+			sliderRotY.addEventListener('input', onSliderChange);
+			sliderRotZ.addEventListener('input', onSliderChange);
+
+			// Nudge Button Logic
+			document.querySelectorAll('.nudge-btn').forEach(btn => {
+				btn.addEventListener('click', (e) => {
+					if (!ghostObject) return;
+					const axis = btn.getAttribute('data-axis');
+					const dir = parseInt(btn.getAttribute('data-dir'));
+					const slider = document.getElementById(`rot-${axis}`);
+
+					let val = parseInt(slider.value) + dir;
+					if (val > 180) val = -180;
+					if (val < -180) val = 180;
+
+					slider.value = val;
+					onSliderChange();
+				});
+			});
+
+			btnSnap.addEventListener('click', () => {
+				if (!ghostObject) return;
+				// Snap Position to nearest 0.5m grid
+				ghostObject.position.x = Math.round(ghostObject.position.x * 2) / 2;
+				ghostObject.position.z = Math.round(ghostObject.position.z * 2) / 2;
+				ghostObject.position.y = -1.45; // Floor level
+
+				// Snap Rotations to nearest 90 degrees
+				const snap90 = (val) => Math.round(val / (Math.PI / 2)) * (Math.PI / 2);
+				ghostObject.rotation.set(snap90(ghostObject.rotation.x), snap90(ghostObject.rotation.y), snap90(ghostObject.rotation.z));
+				updateBuilderUI();
+			});
+
+			btnSave.addEventListener('click', () => {
+				const config = {
+					robots: {
+						"Left": { position: leftRobot.group.position.toArray(), rotation: leftRobot.group.rotation.toArray().slice(0, 3) },
+						"Right": { position: rightRobot.group.position.toArray(), rotation: rightRobot.group.rotation.toArray().slice(0, 3) }
+					},
+					camera: { position: camera.position.toArray(), target: controls.target.toArray() }
+				};
+				console.log("💾 CONFIG TO SAVE:", JSON.stringify(config, null, 2));
+				alert("Config logged to console! (Copy it to robot_config.json)");
+			});
+
+			lockBtn.addEventListener('click', () => {
+				if (ghostObject && originalObject) {
+					originalObject.position.copy(ghostObject.position);
+					originalObject.rotation.copy(ghostObject.rotation);
+					discardGhost();
+				}
+			});
+
+			cancelBtn.addEventListener('click', discardGhost);
+		}
+
+		function initBuilderMode() {
+			if (!transformControl) {
+				transformControl = new TransformControls(camera, renderer.domElement);
+				transformControl.addEventListener('dragging-changed', (event) => controls.enabled = !event.value);
+				transformControl.addEventListener('change', updateBuilderUI);
+				scene.add(transformControl);
+			}
+
+			// Interactive Grid (Spheres)
+			if (!snapGroup) {
+				snapGroup = new THREE.Group();
+				const snapGeo = new THREE.SphereGeometry(0.05, 8, 8);
+				const snapMat = new THREE.MeshBasicMaterial({ color: 0x888888, transparent: true, opacity: 0.3 });
+
+				for (let x = -10; x <= 10; x++) {
+					for (let z = -10; z <= 10; z++) {
+						const dot = new THREE.Mesh(snapGeo, snapMat.clone());
+						dot.position.set(x, -1.5, z);
+						snapGroup.add(dot);
+					}
+				}
+				scene.add(snapGroup);
+			}
+
+			transformControl.enabled = true;
+			document.body.style.cursor = 'crosshair';
+			window.addEventListener('click', onBuilderClick);
+			window.addEventListener('mousemove', onBuilderMove);
+		}
+
+		function exitBuilderMode() {
+			if (transformControl) { transformControl.detach(); transformControl.enabled = false; }
+			if (ghostObject) discardGhost();
+			if (snapGroup) { scene.remove(snapGroup); snapGroup = null; }
+
+			document.getElementById('builder-panel').classList.add('hidden');
+			window.removeEventListener('click', onBuilderClick);
+			window.removeEventListener('mousemove', onBuilderMove);
+			document.body.style.cursor = 'default';
+		}
+
+		function onBuilderMove(event) {
+			if (!snapGroup) return;
+			// Raycast for hover effect
+			mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+			mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+			raycaster.setFromCamera(mouse, camera);
+
+			if (highlightedSnap) {
+				highlightedSnap.material.opacity = 0.3;
+				highlightedSnap.material.color.setHex(0x888888);
+				highlightedSnap.scale.set(1, 1, 1);
+				highlightedSnap = null;
+			}
+
+			const intersects = raycaster.intersectObjects(snapGroup.children);
+			if (intersects.length > 0) {
+				highlightedSnap = intersects[0].object;
+				highlightedSnap.material.opacity = 1.0;
+				highlightedSnap.material.color.setHex(0x00FFFF);
+				highlightedSnap.scale.set(2.5, 2.5, 2.5);
+			}
+
+			// Camera Readout Update
+			const r2d = (r) => (r * (180 / Math.PI)).toFixed(1);
+			document.getElementById('cam-pos').innerText = `${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)}`;
+			document.getElementById('cam-rot').innerText = `${r2d(camera.rotation.x)}, ${r2d(camera.rotation.y)}, ${r2d(camera.rotation.z)}`;
+		}
+
+		function onBuilderClick(event) {
+			if (document.getElementById('builder-panel').classList.contains('hidden')) return;
+
+			mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+			mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+			raycaster.setFromCamera(mouse, camera);
+
+			// 1. Check Snap Points
+			if (ghostObject && snapGroup) {
+				const intersects = raycaster.intersectObjects(snapGroup.children);
+				if (intersects.length > 0) {
+					const pt = intersects[0].object.position;
+					ghostObject.position.set(pt.x, -1.45, pt.z);
+					updateBuilderUI();
+					return;
+				}
+			}
+
+			if (ghostObject) return; // Already editing?
+
+			// 2. Select Robot
+			const intersects = raycaster.intersectObjects([leftRobot.group, rightRobot.group], true);
+			if (intersects.length > 0) {
+				let hit = intersects[0].object;
+				// Walk up to find group
+				while (hit.parent && hit !== leftRobot.group && hit !== rightRobot.group) hit = hit.parent;
+				const robot = (hit === leftRobot.group) ? leftRobot : rightRobot;
+				selectForEditing(robot);
+			}
+		}
+
+		function selectForEditing(robot) {
+			selectedRobotName = robot.name;
+			originalObject = robot.group;
+			ghostObject = originalObject.clone();
+
+			// Fix Ghost Material (Teal)
+			const tealMat = new THREE.MeshBasicMaterial({ color: 0x00FFFF, wireframe: true, transparent: true, opacity: 0.3 });
+			ghostObject.traverse(c => { if (c.isMesh) c.material = tealMat; });
+
+			// Green Pancake Magnet
+			const magGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.002, 32);
+			const magMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+			const magMesh = new THREE.Mesh(magGeo, magMat);
+			magMesh.rotation.x = Math.PI / 2; // Flat
+			// Center at bottom
+			const box = new THREE.Box3().setFromObject(ghostObject);
+			const center = box.getCenter(new THREE.Vector3());
+			magMesh.position.set(center.x, box.min.y, center.z);
+			ghostObject.add(magMesh);
+
+			// Axis Lines
+			const addAxis = (p1, p2, col) => {
+				const g = new THREE.BufferGeometry().setFromPoints([p1, p2]);
+				const m = new THREE.LineBasicMaterial({ color: col });
+				ghostObject.add(new THREE.Line(g, m));
+			};
+			addAxis(new THREE.Vector3(-100, 0, 0), new THREE.Vector3(100, 0, 0), 0xffff00); // X Yellow
+			addAxis(new THREE.Vector3(0, -100, 0), new THREE.Vector3(0, 100, 0), 0x0000ff); // Y Blue
+			addAxis(new THREE.Vector3(0, 0, -100), new THREE.Vector3(0, 0, 100), 0xff00ff); // Z Magenta
+
+			scene.add(ghostObject);
+			transformControl.attach(ghostObject);
+
+			document.getElementById('builder-target').innerText = robot.name;
+			updateBuilderUI();
+		}
+
+		function updateBuilderUI() {
+			if (!ghostObject) return;
+			document.getElementById('val-x').innerText = ghostObject.position.x.toFixed(2);
+			document.getElementById('val-y').innerText = ghostObject.position.y.toFixed(2);
+			document.getElementById('val-z').innerText = ghostObject.position.z.toFixed(2);
+
+			const d = (r) => THREE.MathUtils.radToDeg(r).toFixed(0);
+			document.getElementById('rot-x').value = d(ghostObject.rotation.x);
+			document.getElementById('rot-y').value = d(ghostObject.rotation.y);
+			document.getElementById('rot-z').value = d(ghostObject.rotation.z);
+
+			document.getElementById('disp-rot-x').innerText = d(ghostObject.rotation.x);
+			document.getElementById('disp-rot-y').innerText = d(ghostObject.rotation.y);
+			document.getElementById('disp-rot-z').innerText = d(ghostObject.rotation.z);
+		}
+
+		function discardGhost() {
+			if (transformControl) transformControl.detach();
+			if (ghostObject) { scene.remove(ghostObject); ghostObject = null; }
+			document.getElementById('builder-target').innerText = "None";
+		}
+
+		setupSVGEditor();
+		setupRobotEditor();
+		startAnimation();
+
+		window.addEventListener('resize', () => {
+			camera.aspect = window.innerWidth / window.innerHeight;
+			camera.updateProjectionMatrix();
+			renderer.setSize(window.innerWidth, window.innerHeight);
+			composer.setSize(window.innerWidth, window.innerHeight);
+		});
+
+		window.addEventListener('pagehide', () => {
+			const token = sessionStorage.getItem('hf_token');
+			if (!token) return;
+			const signalingUrl = 'https://pollen-robotics-reachy-mini-central.hf.space';
+			
+			const liteSessionId = duo.sideOf('lite')?.instance?._sessionId;
+			const wirelessSessionId = duo.sideOf('wireless')?.instance?._sessionId;
+
+			if (liteSessionId) {
+				fetch(`${signalingUrl}/send`, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${token}`
+					},
+					body: JSON.stringify({ type: 'endSession', sessionId: liteSessionId }),
+					keepalive: true
+				});
+			}
+			if (wirelessSessionId) {
+				fetch(`${signalingUrl}/send`, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${token}`
+					},
+					body: JSON.stringify({ type: 'endSession', sessionId: wirelessSessionId }),
+					keepalive: true
+				});
+			}
+		});
+	</script>
+</body>
+
+</html>

@@ -1,0 +1,58 @@
+[
+  {
+    "name": "arroz",
+    "display_name": "arroz",
+    "quantity": 600.0,
+    "unit": "g",
+    "expiration_date": "2027-02-07",
+    "storage_location": "armario"
+  },
+  {
+    "name": "pasta",
+    "display_name": "pasta",
+    "quantity": 1000.0,
+    "unit": "g",
+    "expiration_date": "2027-02-07",
+    "storage_location": "armario"
+  },
+  {
+    "name": "pollo",
+    "display_name": "pollo",
+    "quantity": 0.0,
+    "unit": "g",
+    "expiration_date": "2026-02-10",
+    "storage_location": "nevera"
+  },
+  {
+    "name": "tomates cherry",
+    "display_name": "tomates cherry",
+    "quantity": 300.0,
+    "unit": "g",
+    "expiration_date": "2026-02-14",
+    "storage_location": "armario"
+  },
+  {
+    "name": "mix de verduras",
+    "display_name": "mix de verduras",
+    "quantity": 0.0,
+    "unit": "g",
+    "expiration_date": "2026-02-14",
+    "storage_location": null
+  },
+  {
+    "name": "chicken",
+    "display_name": "chicken",
+    "quantity": 0.0,
+    "unit": "g",
+    "expiration_date": "2026-02-10",
+    "storage_location": "nevera"
+  },
+  {
+    "name": "corn on the cob",
+    "display_name": "corn on the cob",
+    "quantity": 0.0,
+    "unit": "pcs",
+    "expiration_date": null,
+    "storage_location": null
+  }
+]
