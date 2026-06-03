@@ -1,0 +1,26 @@
+{
+  "id": "clawbody",
+  "title": "ClawBody",
+  "description": "OpenClaw AI with Reachy Mini body, voice conversation, vision, and face tracking.",
+  "command": [
+    "python3",
+    "-m",
+    "reachy_mini_openclaw.main",
+    "--gradio"
+  ],
+  "frontendUrl": "http://127.0.0.1:7860/",
+  "healthUrl": "http://127.0.0.1:7860/",
+  "stopSignal": "SIGINT",
+  "setupCommand": [
+    "python3",
+    "-m",
+    "pip",
+    "install",
+    "-e",
+    ".[mediapipe_vision]"
+  ],
+  "setupHint": "首次运行前请在 apps/clawbody 安装依赖，并配置 OPENAI_API_KEY、OPENCLAW_GATEWAY_URL 等环境变量。",
+  "env": {
+    "PYTHONPATH": "src"
+  }
+}
