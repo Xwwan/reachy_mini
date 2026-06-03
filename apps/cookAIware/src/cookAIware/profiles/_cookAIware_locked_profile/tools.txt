@@ -1,0 +1,6 @@
+# Available tools for this profile
+inventory_action
+family_profile_action
+meal_plan_action
+shopping_list_action
+app_settings_action

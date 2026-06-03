@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>CookAIware — Reachy Mini Kitchen Assistant</title>
+
+    <meta property="og:title" content="CookAIware — Reachy Mini Kitchen Assistant" />
+    <meta property="og:description" content="Track pantry items, plan family meals, and generate shopping lists by talking to Reachy Mini." />
+    <meta property="og:image" content="CookAIware.jpeg" />
+    <meta property="og:type" content="website" />
+
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Nunito:wght@400;600;700&display=swap" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+
+  <body>
+    <div class="bg-orbit"></div>
+    <div class="bg-sparkle"></div>
+
+    <div class="topbar">
+      <div class="container topbar-inner">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          <span>CookAIware</span>
+        </div>
+        <a class="btn ghost" href="#install">Get App</a>
+      </div>
+    </div>
+
+    <header class="hero">
+      <div class="container hero-grid">
+        <div class="hero-content">
+          <div class="badge-group">
+            <span class="badge">Reachy Mini App</span>
+            <span class="badge">Inventory</span>
+            <span class="badge">Meal planning</span>
+            <span class="badge">Shopping lists</span>
+          </div>
+          <h1>Plan meals. Track food. Just talk to Reachy.</h1>
+          <p class="subtitle">CookAIware turns Reachy Mini into a kitchen assistant that remembers what you have at home,
+plans meals for your family, and builds shopping lists automatically.</p>
+          <div class="btn-group">
+            <a class="btn primary" href="#install">Install on Reachy Mini</a>
+            <a class="btn ghost" href="#how">How it works</a>
+          </div>
+          <div class="feature-pills">
+            <div class="feature-pill">
+              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+              Local JSON Data
+            </div>
+            <div class="feature-pill">
+              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+              Privacy First
+            </div>
+          </div>
+        </div>
+        <div class="hero-visual-wrapper">
+          <img src="CookAIware.jpeg" alt="CookAIware Reachy Mini Illustration" class="hero-visual" width="800" height="380">
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="section chat-showcase">
+        <div class="container">
+          <div class="section-header">
+            <p class="eyebrow">Conversation demo</p>
+            <h2>Talk naturally with Reachy</h2>
+            <p class="muted">CookAIware understands everyday kitchen conversations. What you bought, what you're cooking, and what you need to buy next.</p>
+          </div>
+          <div class="chat-panel chat-ui">
+            <div id="transcript" class="transcript">
+              <div class="msg assistant seq-1">
+                <img class="avatar" src="src/cookAIware/static/reachymini_avatar.png" alt="assistant" />
+                <div class="bubble assistant">Hello! I'm ready to help with your inventory, meals, and shopping lists. Let's get started whenever you are.</div>
+              </div>
+
+              <div class="msg user seq-2">
+                <img class="avatar" src="src/cookAIware/static/user_avatar.png" alt="user" />
+                <div class="bubble user">What do we have for lunch today?</div>
+              </div>
+
+              <div class="msg assistant seq-3">
+                <img class="avatar" src="src/cookAIware/static/reachymini_avatar.png" alt="assistant" />
+                <div class="bubble assistant">Today we're having chicken and tomato rice as a side dish.</div>
+              </div>
+
+              <div class="msg user seq-4">
+                <img class="avatar" src="src/cookAIware/static/user_avatar.png" alt="user" />
+                <div class="bubble user">Great, thanks Reachy!</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="how" class="section">
+        <div class="container">
+          <div class="section-header">
+            <p class="eyebrow">How it works</p>
+            <h2>From pantry to plan in four simple steps</h2>
+            <p class="muted">CookAIware makes everyday food management simple: add ingredients, plan meals, cook to update inventory, and automatically build your shopping list.</p>
+          </div>
+          <div class="feature-toggle">
+            <input class="feature-input" type="radio" name="feature" id="feature-inventory" checked />
+            <input class="feature-input" type="radio" name="feature" id="feature-plan" />
+            <input class="feature-input" type="radio" name="feature" id="feature-shop" />
+            <input class="feature-input" type="radio" name="feature" id="feature-ask" />
+
+            <div class="card-grid">
+              <label class="card card-toggle" for="feature-inventory">
+                <h3>1. Capture inventory</h3>
+                <p>Tell Reachy what you bought. CookAIware stores quantity, unit, expiration date, and storage location.</p>
+              </label>
+              <label class="card card-toggle" for="feature-plan">
+                <h3>2. Plan the week</h3>
+                <p>Your meals are planned automatically using your pantry and your family schedule.</p>
+              </label>
+              <label class="card card-toggle" for="feature-shop">
+                <h3>3. Shop the shortfalls</h3>
+                <p>Generate a shopping list that fills only what your meal plan requires.</p>
+              </label>
+              <label class="card card-toggle" for="feature-ask">
+                <h3>4. Cook and update inventory</h3>
+                <p>Confirm servings, get exact quantities, and update inventory automatically when you cook.</p>
+              </label>
+            </div>
+
+            <div class="feature-panels">
+              <div class="feature-panel" id="panel-inventory">
+                <div class="chat-panel chat-ui">
+                  <div class="transcript">
+                    <div class="msg assistant seq-1">
+                      <img class="avatar" src="src/cookAIware/static/reachymini_avatar.png" alt="assistant" />
+                      <div class="bubble assistant">Tell me what you bought, and I will log it.</div>
+                    </div>
+                    <div class="msg user seq-2">
+                      <img class="avatar" src="src/cookAIware/static/user_avatar.png" alt="user" />
+                      <div class="bubble user">I bought 2 kg chicken and 1 kg carrots.</div>
+                    </div>
+                    <div class="msg assistant seq-3">
+                      <img class="avatar" src="src/cookAIware/static/reachymini_avatar.png" alt="assistant" />
+                      <div class="bubble assistant">Added. Any expiration dates or storage locations?</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="feature-panel" id="panel-plan">
+                <div class="chat-panel chat-ui">
+                  <div class="transcript">
+                    <div class="msg user seq-1">
+                      <img class="avatar" src="src/cookAIware/static/user_avatar.png" alt="user" />
+                      <div class="bubble user">Plan meals for the week.</div>
+                    </div>
+                    <div class="msg assistant seq-2">
+                      <img class="avatar" src="src/cookAIware/static/reachymini_avatar.png" alt="assistant" />
+                      <div class="bubble assistant">Done. Weekdays are set as dinner-only, weekends include all meals, sized for your family.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="feature-panel" id="panel-shop">
+                <div class="chat-panel chat-ui">
+                  <div class="transcript">
+                    <div class="msg user seq-1">
+                      <img class="avatar" src="src/cookAIware/static/user_avatar.png" alt="user" />
+                      <div class="bubble user">Create a shopping list for the plan.</div>
+                    </div>
+                    <div class="msg assistant seq-2">
+                      <img class="avatar" src="src/cookAIware/static/reachymini_avatar.png" alt="assistant" />
+                      <div class="bubble assistant">Here is the list of items needed to complete the plan: rice, tomatoes, yogurt.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="feature-panel" id="panel-ask">
+                <div class="chat-panel chat-ui">
+                  <div class="transcript">
+                    <div class="msg user seq-1">
+                      <img class="avatar" src="src/cookAIware/static/user_avatar.png" alt="user" />
+                      <div class="bubble user">What are we having for dinner on Friday?</div>
+                    </div>
+                    <div class="msg assistant seq-2">
+                      <img class="avatar" src="src/cookAIware/static/reachymini_avatar.png" alt="assistant" />
+                      <div class="bubble assistant">Friday dinner is chicken with roasted carrots and bread. Should I cook it for 5 people?</div>
+                    </div>
+                    <div class="msg user seq-3">
+                      <img class="avatar" src="src/cookAIware/static/user_avatar.png" alt="user" />
+                      <div class="bubble user">Yes, that's for 2 adults and 3 children.</div>
+                    </div>
+                    <div class="msg assistant seq-4">
+                      <img class="avatar" src="src/cookAIware/static/reachymini_avatar.png" alt="assistant" />
+                      <div class="bubble assistant">Got it. For 5 servings you'll need 1.2 kg chicken, 600 g carrots, and 1 loaf of bread. You have enough in inventory. Shall I decrease these quantities now?</div>
+                    </div>
+                    <div class="msg user seq-5">
+                      <img class="avatar" src="src/cookAIware/static/user_avatar.png" alt="user" />
+                      <div class="bubble user">Yes, please update the inventory.</div>
+                    </div>
+                    <div class="msg assistant seq-6">
+                      <img class="avatar" src="src/cookAIware/static/reachymini_avatar.png" alt="assistant" />
+                      <div class="bubble assistant">Done. Your inventory is updated. Enjoy your meal!</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="privacy" class="section">
+        <div class="container">
+          <div class="section-header">
+            <p class="eyebrow">Privacy &amp; keys</p>
+            <h2>Local data, clear controls</h2>
+            <p class="muted">Your household data stays local to your device. CookAIware stores everything in simple local JSON files.</p>
+          </div>
+          <div class="card-grid">
+            <div class="card">
+              <h3>Local storage</h3>
+              <p>CookAIware stores inventory, meal plans, and family profile data locally. No household data is uploaded to external services.</p>
+            </div>
+            <div class="card">
+              <h3>No assistant memory</h3>
+              <p>The LLM does not store state. It reads and writes only to the local files.</p>
+            </div>
+            <div class="card">
+              <h3>Data control</h3>
+              <p>The assistant is designed to be transparent and controllable, you can always view and edit data through the control panel.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="install" class="section install">
+        <div class="container">
+          <div class="section-header">
+            <p class="eyebrow">Install</p>
+            <h2>Install from the Reachy Mini app store</h2>
+            <p class="muted">Search for CookAIware in the dashboard, install, and start talking.</p>
+          </div>
+          <div class="install-layout">
+            <ol class="install-steps">
+              <li>
+                <span>Make sure you have the <a href="https://github.com/pollen-robotics/reachy-mini-desktop-app/releases/latest" class="link-tertiary">dashboard</a> installed.</span>
+              </li>
+              <li>
+                <span>Connect to your Reachy Mini using the dashboard.</span>
+              </li>
+              <li>
+                <span>Navigate to the "Applications" tab in the dashboard.</span>
+              </li>
+              <li>
+                <span>Find "cookAIware" in the list of available applications.</span>
+              </li>
+              <li>
+                <span>Click "Install".</span>
+              </li>
+            </ol>
+            <div class="install-sidebar">
+              <div class="install-card">
+                <h3>Set up your OpenAI API key</h3>
+                <p>Add your <code>OPENAI_API_KEY</code> to <code>.env</code> locally.</p>
+              </div>
+              <div class="install-card">
+                <h3>Control panel</h3>
+                <p>Access local settings from the Reachy dashboard by clicking the gear icon next to the app.</p>
+                <p>From there, you can view the live conversation and optionally manage inventory, meal planning and the shopping list.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <section id="final-image" class="section final-image">
+      <div class="container">
+        <img src="CookAIware_laptop.png" alt="CookAIware on a laptop" class="final-image-visual" style="max-width:50%;height:auto;display:block;margin:0 auto;" />
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="container footer-content">
+        <div class="footer-brand">
+          <h3>CookAIware</h3>
+          <p>A Reachy Mini app for family meal planning, pantry tracking, and shopping lists.</p>
+        </div>
+        <div class="footer-social">
+          <h4>Contact me</h4>
+          <div class="social-pills-row">
+            <a href="https://www.linkedin.com/in/jimenezcarrero" class="social-pill" target="_blank" rel="noopener noreferrer">
+              <svg fill="currentColor" viewBox="0 0 24 24" width="20" height="20"><path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/></svg>
+              LinkedIn
+            </a>
+            <a href="https://github.com/jimenezcarrero" class="social-pill" target="_blank" rel="noopener noreferrer">
+              <svg fill="currentColor" viewBox="0 0 24 24" width="20" height="20"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+              GitHub
+            </a>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

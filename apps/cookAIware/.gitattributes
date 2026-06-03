@@ -1,0 +1,63 @@
+# Macro for all binary files that should use Git LFS.
+# [attr]lfs -text filter=lfs diff=lfs merge=lfs
+
+# Image
+*.jpg filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text
+*.png filter=lfs diff=lfs merge=lfs -text
+*.apng filter=lfs diff=lfs merge=lfs -text
+*.atsc filter=lfs diff=lfs merge=lfs -text
+*.gif filter=lfs diff=lfs merge=lfs -text
+*.bmp filter=lfs diff=lfs merge=lfs -text
+*.exr filter=lfs diff=lfs merge=lfs -text
+*.tga filter=lfs diff=lfs merge=lfs -text
+*.tiff filter=lfs diff=lfs merge=lfs -text
+*.tif filter=lfs diff=lfs merge=lfs -text
+*.iff filter=lfs diff=lfs merge=lfs -text
+*.pict filter=lfs diff=lfs merge=lfs -text
+*.dds filter=lfs diff=lfs merge=lfs -text
+*.xcf filter=lfs diff=lfs merge=lfs -text
+*.leo filter=lfs diff=lfs merge=lfs -text
+*.kra filter=lfs diff=lfs merge=lfs -text
+*.kpp filter=lfs diff=lfs merge=lfs -text
+*.clip filter=lfs diff=lfs merge=lfs -text
+*.webm filter=lfs diff=lfs merge=lfs -text
+*.webp filter=lfs diff=lfs merge=lfs -text
+*.svg filter=lfs diff=lfs merge=lfs -text
+*.svgz filter=lfs diff=lfs merge=lfs -text
+*.psd filter=lfs diff=lfs merge=lfs -text
+*.afphoto filter=lfs diff=lfs merge=lfs -text
+*.afdesign filter=lfs diff=lfs merge=lfs -text
+# Models
+*.pth filter=lfs diff=lfs merge=lfs -text
+# Binaries
+*.bin filter=lfs diff=lfs merge=lfs -text
+*.pkl filter=lfs diff=lfs merge=lfs -text
+*.pckl filter=lfs diff=lfs merge=lfs -text
+# 3D
+*.ply filter=lfs diff=lfs merge=lfs -text
+*.vis filter=lfs diff=lfs merge=lfs -text
+*.db filter=lfs diff=lfs merge=lfs -text
+*.ply filter=lfs diff=lfs merge=lfs -text
+CookAIware.jpeg filter=lfs diff=lfs merge=lfs -text
+CookAIware_laptop.png filter=lfs diff=lfs merge=lfs -text
+dashboard-screenshot.png filter=lfs diff=lfs merge=lfs -text
+docs/assets/reachy_mini_dance.gif filter=lfs diff=lfs merge=lfs -text
+src/cookAIware/images/reachymini_avatar.png filter=lfs diff=lfs merge=lfs -text
+src/cookAIware/images/reachymini_avatar_old.png filter=lfs diff=lfs merge=lfs -text
+src/cookAIware/images/user_avatar.png filter=lfs diff=lfs merge=lfs -text
+src/cookAIware/images/user_avatar_old.png filter=lfs diff=lfs merge=lfs -text
+src/cookAIware/static/cookaiware-hero.png filter=lfs diff=lfs merge=lfs -text
+src/cookAIware/static/reachymini_avatar.png filter=lfs diff=lfs merge=lfs -text
+src/cookAIware/static/reachymini_avatar_old.png filter=lfs diff=lfs merge=lfs -text
+src/cookAIware/static/user_avatar.png filter=lfs diff=lfs merge=lfs -text
+src/cookAIware/static/user_avatar_old.png filter=lfs diff=lfs merge=lfs -text
+test_venv/Lib/site-packages/pip/_vendor/distlib/t64-arm.exe filter=lfs diff=lfs merge=lfs -text
+test_venv/Lib/site-packages/pip/_vendor/distlib/t64.exe filter=lfs diff=lfs merge=lfs -text
+test_venv/Lib/site-packages/pip/_vendor/distlib/w64-arm.exe filter=lfs diff=lfs merge=lfs -text
+test_venv/Lib/site-packages/pip/_vendor/distlib/w64.exe filter=lfs diff=lfs merge=lfs -text
+test_venv/Scripts/pip.exe filter=lfs diff=lfs merge=lfs -text
+test_venv/Scripts/pip3.13.exe filter=lfs diff=lfs merge=lfs -text
+test_venv/Scripts/pip3.exe filter=lfs diff=lfs merge=lfs -text
+test_venv/Scripts/python.exe filter=lfs diff=lfs merge=lfs -text
+test_venv/Scripts/pythonw.exe filter=lfs diff=lfs merge=lfs -text

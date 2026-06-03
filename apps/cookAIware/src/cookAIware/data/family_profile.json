@@ -1,0 +1,20 @@
+{
+  "adults": 2,
+  "children": 3,
+  "schedule": {
+    "weekday": {
+      "dinner": true,
+      "lunch_adults": 1,
+      "lunch_days": [
+        "monday",
+        "wednesday",
+        "friday"
+      ]
+    },
+    "weekend": {
+      "breakfast": false,
+      "lunch": true,
+      "dinner": true
+    }
+  }
+}
