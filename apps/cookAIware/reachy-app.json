@@ -2,22 +2,19 @@
   "id": "cookAIware",
   "title": "cookAIware",
   "description": "Family food inventory, weekly meal planning, shopping list, and Reachy Mini voice assistant.",
-  "command": [
-    "python3",
-    "-m",
-    "cookAIware.main"
-  ],
+  "python": "python3",
+  "venv": ".venv",
+  "module": "cookAIware.main",
+  "args": [],
   "frontendUrl": "http://127.0.0.1:7860/",
   "healthUrl": "http://127.0.0.1:7860/",
   "stopSignal": "SIGINT",
-  "setupCommand": [
-    "python3",
-    "-m",
-    "pip",
-    "install",
-    "-e",
-    "."
-  ],
+  "setup": {
+    "install": [
+      "-e",
+      "."
+    ]
+  },
   "setupHint": "首次运行前请在 apps/cookAIware 安装依赖，并在 .env 中配置 OPENAI_API_KEY。",
   "env": {
     "PYTHONPATH": "src"

@@ -453,6 +453,21 @@ h3 {
   line-height: 1.5;
 }
 
+.setup-log {
+  background: #17212b;
+  border: 1px solid #2d3b48;
+  border-radius: 8px;
+  color: #d7e4ed;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 16rem;
+  overflow: auto;
+  padding: 0.85rem;
+  white-space: pre-wrap;
+}
+
 .app-frame-area {
   border: 1px solid #d9e1e7;
   border-radius: 8px;

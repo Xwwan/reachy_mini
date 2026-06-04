@@ -1,6 +1,7 @@
-import type { LocalAppInfo, LocalAppStatus } from "./types";
+import type { LocalAppInfo, LocalAppStatus, SetupStatus } from "./types";
 
 const terminalStates = new Set(["done", "error"]);
+const setupTerminalStates = new Set(["done", "error"]);
 
 export class ApiError extends Error {
   status?: number;
@@ -65,6 +66,20 @@ export async function startApp(base: string, appId: string): Promise<LocalAppSta
   return readJson<LocalAppStatus>(response);
 }
 
+export async function setupApp(base: string, appId: string): Promise<SetupStatus> {
+  const response = await fetch(`${base}/api/local-apps/${encodeURIComponent(appId)}/setup`, {
+    method: "POST",
+  });
+  return readJson<SetupStatus>(response);
+}
+
+export async function fetchSetupStatus(base: string, appId: string): Promise<SetupStatus> {
+  const response = await fetch(`${base}/api/local-apps/${encodeURIComponent(appId)}/setup-status`, {
+    cache: "no-store",
+  });
+  return readJson<SetupStatus>(response);
+}
+
 export async function stopCurrentApp(base: string): Promise<void> {
   const response = await fetch(`${base}/api/local-apps/current/stop`, {
     method: "POST",
@@ -114,6 +129,26 @@ export async function waitForAppSettle(
   }
 
   throw new ApiError(`Timed out while waiting for ${appId} to start.`);
+}
+
+export async function waitForSetupSettle(
+  base: string,
+  appId: string,
+  onUpdate?: (status: SetupStatus) => void,
+  timeoutMs = 20 * 60_000,
+): Promise<SetupStatus> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const status = await fetchSetupStatus(base, appId);
+    onUpdate?.(status);
+    if (setupTerminalStates.has(status.state)) {
+      return status;
+    }
+    await delay(1000);
+  }
+
+  throw new ApiError(`Timed out while setting up ${appId}.`);
 }
 
 export function resolveAppPageUrl(frontendUrl: string | null | undefined): string | null {

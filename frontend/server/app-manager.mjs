@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -13,6 +13,7 @@ const host = process.env.APP_MANAGER_HOST ?? "127.0.0.1";
 const terminalStates = new Set(["done", "error"]);
 
 let current = null;
+const setupJobs = new Map();
 
 function displayName(slug) {
   return slug
@@ -57,7 +58,12 @@ async function loadDescriptor(appDir, fallbackId) {
     id: descriptor.id ?? fallbackId,
     title: descriptor.title ?? displayName(fallbackId),
     description: descriptor.description ?? "",
+    python: descriptor.python ?? "python3",
+    venv: descriptor.venv ?? null,
+    module: descriptor.module ?? null,
+    args: Array.isArray(descriptor.args) ? descriptor.args : [],
     command: Array.isArray(descriptor.command) ? descriptor.command : [],
+    setup: descriptor.setup ?? null,
     setupCommand: Array.isArray(descriptor.setupCommand) ? descriptor.setupCommand : [],
     setupHint: descriptor.setupHint ?? "",
     frontendUrl: descriptor.frontendUrl ?? null,
@@ -95,6 +101,11 @@ async function scanAppsWithDescriptors() {
     }));
 
     const id = descriptor?.id ?? entry.name;
+    const command = descriptor ? resolveCommand(appDir, descriptor) : [];
+    const installed = descriptor ? isAppInstalled(appDir, descriptor) : false;
+    const setup = descriptor ? setupInfo(id, appDir, descriptor, installed) : emptySetupInfo();
+    const configured = command.length > 0;
+
     const info = {
       id,
       title: descriptor?.title ?? readme.title ?? displayName(entry.name),
@@ -102,8 +113,15 @@ async function scanAppsWithDescriptors() {
       path: path.relative(repoRoot, appDir),
       hasReadme: readme.hasReadme,
       hasDescriptor: Boolean(descriptor),
-      startable: Boolean(descriptor?.command?.length),
-      command: descriptor?.command ?? [],
+      configured,
+      startable: configured && installed,
+      command,
+      python: descriptor?.python ?? null,
+      venv: descriptor?.venv ?? null,
+      module: descriptor?.module ?? null,
+      args: descriptor?.args ?? [],
+      installed,
+      setup,
       setupCommand: descriptor?.setupCommand ?? [],
       setupHint: descriptor?.setupHint ?? "",
       frontendUrl: descriptor?.frontendUrl ?? null,
@@ -116,6 +134,59 @@ async function scanAppsWithDescriptors() {
   return apps;
 }
 
+function resolveCommand(appDir, descriptor) {
+  if (descriptor.command.length) {
+    return descriptor.command;
+  }
+  if (!descriptor.module) {
+    return [];
+  }
+  const python = descriptor.venv ? venvPythonPath(appDir, descriptor.venv) : descriptor.python;
+  return [python, "-m", descriptor.module, ...descriptor.args];
+}
+
+function venvPythonPath(appDir, venv) {
+  const relative = process.platform === "win32"
+    ? path.join(venv, "Scripts", "python.exe")
+    : path.join(venv, "bin", "python");
+  return path.join(appDir, relative);
+}
+
+function isAppInstalled(appDir, descriptor) {
+  if (!descriptor.venv) {
+    return true;
+  }
+  return existsSync(venvPythonPath(appDir, descriptor.venv));
+}
+
+function setupInfo(appId, appDir, descriptor, installed) {
+  const job = setupJobs.get(appId);
+  const available = Boolean(
+    descriptor.venv || descriptor.setup?.install?.length || descriptor.setupCommand.length,
+  );
+  return {
+    available,
+    required: Boolean(descriptor.venv),
+    installed,
+    state: job?.state ?? (descriptor.venv && !installed ? "needed" : "ready"),
+    error: job?.error ?? null,
+    logs: job?.logs?.slice(-30) ?? [],
+    venvPath: descriptor.venv ? path.relative(repoRoot, path.join(appDir, descriptor.venv)) : null,
+  };
+}
+
+function emptySetupInfo() {
+  return {
+    available: false,
+    required: false,
+    installed: false,
+    state: "unavailable",
+    error: null,
+    logs: [],
+    venvPath: null,
+  };
+}
+
 async function listApps() {
   return (await scanAppsWithDescriptors()).map(({ info }) => info);
 }
@@ -126,8 +197,8 @@ async function findApp(appId) {
   if (!match) {
     throw httpError(404, `App '${appId}' was not found.`);
   }
-  if (!match.descriptor?.command?.length) {
-    throw httpError(400, `App '${appId}' has no start command. Add ${descriptorName}.`);
+  if (!match.info.configured) {
+    throw httpError(400, `App '${appId}' has no start command. Add module or command to ${descriptorName}.`);
   }
   return match;
 }
@@ -156,8 +227,13 @@ async function startApp(appId) {
   }
 
   const { info, descriptor, appDir } = await findApp(appId);
+  if (!info.installed) {
+    throw httpError(400, `App '${appId}' is not set up yet. Run setup first.`);
+  }
+
   const cwd = descriptor.cwd ? path.resolve(appDir, descriptor.cwd) : appDir;
-  const child = spawn(descriptor.command[0], descriptor.command.slice(1), {
+  const command = resolveCommand(appDir, descriptor);
+  const child = spawn(command[0], command.slice(1), {
     cwd,
     env: { ...process.env, ...descriptor.env },
     detached: process.platform !== "win32",
@@ -253,6 +329,116 @@ async function restartApp(appId) {
   return startApp(appId);
 }
 
+async function setupApp(appId) {
+  const { descriptor, appDir, info } = await findApp(appId);
+  if (!info.setup.available) {
+    throw httpError(400, `App '${appId}' has no setup instructions.`);
+  }
+
+  const existing = setupJobs.get(appId);
+  if (existing?.state === "running") {
+    return setupStatus(appId);
+  }
+
+  const job = {
+    appId,
+    state: "running",
+    startedAt: Date.now() / 1000,
+    finishedAt: null,
+    error: null,
+    logs: [],
+  };
+  setupJobs.set(appId, job);
+
+  runSetupJob(job, appDir, descriptor).catch((error) => {
+    job.state = "error";
+    job.error = error.message ?? String(error);
+    job.finishedAt = Date.now() / 1000;
+    appendLog(job, `ERROR: ${job.error}`);
+  });
+
+  return job;
+}
+
+function setupStatus(appId) {
+  return setupJobs.get(appId) ?? {
+    appId,
+    state: "idle",
+    startedAt: null,
+    finishedAt: null,
+    error: null,
+    logs: [],
+  };
+}
+
+async function runSetupJob(job, appDir, descriptor) {
+  const cwd = descriptor.cwd ? path.resolve(appDir, descriptor.cwd) : appDir;
+  await mkdir(cwd, { recursive: true });
+
+  if (descriptor.setupCommand.length) {
+    await runStep(job, descriptor.setupCommand, cwd, descriptor.env);
+  } else {
+    if (descriptor.venv) {
+      await runStep(job, [descriptor.python, "-m", "venv", descriptor.venv], cwd, descriptor.env);
+      const venvPython = venvPythonPath(appDir, descriptor.venv);
+      await runStep(job, [venvPython, "-m", "pip", "install", "-U", "pip"], cwd, descriptor.env);
+      const installArgs = Array.isArray(descriptor.setup?.install) ? descriptor.setup.install : [];
+      if (installArgs.length) {
+        await runStep(job, [venvPython, "-m", "pip", "install", ...installArgs], cwd, descriptor.env);
+      }
+    } else if (Array.isArray(descriptor.setup?.install) && descriptor.setup.install.length) {
+      await runStep(
+        job,
+        [descriptor.python, "-m", "pip", "install", ...descriptor.setup.install],
+        cwd,
+        descriptor.env,
+      );
+    }
+  }
+
+  job.state = "done";
+  job.finishedAt = Date.now() / 1000;
+  appendLog(job, "Setup finished successfully.");
+}
+
+function runStep(job, command, cwd, env) {
+  appendLog(job, `$ ${command.join(" ")}`);
+  return new Promise((resolve, reject) => {
+    const child = spawn(command[0], command.slice(1), {
+      cwd,
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout?.on("data", (chunk) => {
+      for (const line of chunk.toString().split(/\r?\n/).filter(Boolean)) {
+        appendLog(job, line);
+      }
+    });
+    child.stderr?.on("data", (chunk) => {
+      for (const line of chunk.toString().split(/\r?\n/).filter(Boolean)) {
+        appendLog(job, line);
+      }
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Command failed with code ${code}: ${command.join(" ")}`));
+      }
+    });
+  });
+}
+
+function appendLog(job, line) {
+  job.logs.push(line);
+  if (job.logs.length > 400) {
+    job.logs.splice(0, job.logs.length - 400);
+  }
+  process.stdout.write(`[setup:${job.appId}] ${line}\n`);
+}
+
 function normalizeSignal(signal) {
   const normalized = String(signal || "SIGINT").toUpperCase();
   return normalized.startsWith("SIG") ? normalized : `SIG${normalized}`;
@@ -290,6 +476,16 @@ async function route(method, pathname) {
 
   if (method === "POST" && pathname === "/api/local-apps/current/stop") {
     return stopCurrentApp();
+  }
+
+  const setupMatch = pathname.match(/^\/api\/local-apps\/([^/]+)\/setup$/);
+  if (method === "POST" && setupMatch) {
+    return setupApp(decodeURIComponent(setupMatch[1]));
+  }
+
+  const setupStatusMatch = pathname.match(/^\/api\/local-apps\/([^/]+)\/setup-status$/);
+  if (method === "GET" && setupStatusMatch) {
+    return setupStatus(decodeURIComponent(setupStatusMatch[1]));
   }
 
   const startMatch = pathname.match(/^\/api\/local-apps\/([^/]+)\/start$/);
