@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   CheckCircle2,
+  Download,
   ExternalLink,
   FileWarning,
   Loader2,
@@ -18,12 +19,14 @@ import {
   normalizeManagerUrl,
   resolveAppPageUrl,
   restartApp,
+  setupApp,
   startApp,
   stopCurrentApp,
   waitForAppSettle,
+  waitForSetupSettle,
   waitForNoRunningApp,
 } from "./api";
-import type { ApiSettings, LocalAppInfo, LocalAppStatus } from "./types";
+import type { ApiSettings, LocalAppInfo, LocalAppStatus, SetupStatus } from "./types";
 
 const managerUrlStorageKey = "reachy-mini-switcher-manager-url";
 const proxyStorageKey = "reachy-mini-switcher-use-manager-proxy";
@@ -37,7 +40,7 @@ function stateClass(state: string): string {
   if (state === "running") {
     return "status-good";
   }
-  if (state === "starting" || state === "stopping") {
+  if (state === "starting" || state === "stopping" || state === "setup") {
     return "status-working";
   }
   if (state === "error") {
@@ -63,6 +66,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [iframeNonce, setIframeNonce] = useState(0);
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
 
   const base = useMemo(
     () => apiBase(settings.managerUrl, settings.useDevProxy),
@@ -76,6 +80,8 @@ function App() {
   const runningApp = currentStatus?.app;
   const activeApp = selectedApp ?? runningApp;
   const appPageUrl = resolveAppPageUrl(activeApp?.frontendUrl);
+  const activeSetupLogs =
+    setupStatus?.appId === activeApp?.id ? setupStatus?.logs ?? [] : activeApp?.setup.logs ?? [];
   const connectionState = error ? "attention" : "ready";
   const actionLocked = busyAction !== null;
 
@@ -158,6 +164,20 @@ function App() {
       const settled = await waitForAppSettle(base, app.id);
       setCurrentStatus(settled);
       setIframeNonce((value) => value + 1);
+      await refresh();
+    });
+  }
+
+  async function setupLocalApp(app: LocalAppInfo) {
+    setSelectedAppId(app.id);
+
+    await runWithBusy(`Setting up ${app.title}`, async () => {
+      const started = await setupApp(base, app.id);
+      setSetupStatus(started);
+      const settled = await waitForSetupSettle(base, app.id, setSetupStatus);
+      if (settled.state === "error") {
+        throw new Error(settled.error ?? `Setup failed for ${app.title}.`);
+      }
       await refresh();
     });
   }
@@ -248,7 +268,16 @@ function App() {
               {apps.map((app) => {
                 const isRunning = currentStatus?.app.id === app.id;
                 const isSelected = selectedAppId === app.id || (!selectedAppId && isRunning);
-                const appState = isRunning ? currentStatus?.state ?? "running" : "idle";
+                const setupRunning =
+                  app.setup.state === "running" || (setupStatus?.appId === app.id && setupStatus.state === "running");
+                const needsSetup = app.setup.required && !app.installed;
+                const appState = setupRunning
+                  ? "setup"
+                  : isRunning
+                    ? currentStatus?.state ?? "running"
+                    : needsSetup
+                      ? "needs setup"
+                      : "idle";
 
                 return (
                   <li key={app.id}>
@@ -264,15 +293,31 @@ function App() {
                       <span className={`app-state ${stateClass(appState)}`}>{appState}</span>
                     </button>
                     <div className="app-row-actions">
+                      {app.setup.available && !app.installed && (
+                        <button
+                          onClick={() => void setupLocalApp(app)}
+                          disabled={actionLocked || setupRunning}
+                          title={`Setup ${app.title}`}
+                        >
+                          {setupRunning ? <Loader2 size={16} className="spin" /> : <Download size={16} />}
+                          <span>Setup</span>
+                        </button>
+                      )}
                       <button
                         onClick={() => void switchToApp(app)}
                         disabled={actionLocked || !app.startable}
-                        title={app.startable ? `Start ${app.title}` : "Add reachy-app.json with a command first"}
+                        title={
+                          app.startable
+                            ? `Start ${app.title}`
+                            : app.setup.required && !app.installed
+                              ? "Run setup first"
+                              : "Add reachy-app.json with module or command first"
+                        }
                       >
                         <Play size={16} />
                         <span>Start</span>
                       </button>
-                      {!app.startable && (
+                      {!app.configured && (
                         <span className="app-hint">
                           <FileWarning size={14} />
                           descriptor needed
@@ -313,6 +358,12 @@ function App() {
               <Play size={18} />
               <span>Start</span>
             </button>
+            {activeApp?.setup.available && !activeApp.installed && (
+              <button onClick={() => void setupLocalApp(activeApp)} disabled={actionLocked}>
+                <Download size={18} />
+                <span>Setup</span>
+              </button>
+            )}
             <button onClick={() => void stopApp()} disabled={!currentStatus || actionLocked}>
               <Square size={18} />
               <span>Stop</span>
@@ -339,8 +390,14 @@ function App() {
               <strong>{activeApp?.path ?? "-"}</strong>
             </div>
             <div>
-              <span>Process</span>
-              <strong>{currentStatus?.pid ? `pid ${currentStatus.pid}` : "-"}</strong>
+              <span>Setup</span>
+              <strong>
+                {activeApp?.setup.required
+                  ? activeApp.installed
+                    ? "ready"
+                    : activeApp.setup.state
+                  : "not required"}
+              </strong>
             </div>
             <div>
               <span>Updated</span>
@@ -355,6 +412,17 @@ function App() {
               <FileWarning size={18} />
               <span>{activeApp.setupHint}</span>
             </div>
+          )}
+
+          {activeApp?.setup.venvPath && (
+            <div className="notice info">
+              <Download size={18} />
+              <span>虚拟环境: {activeApp.setup.venvPath}</span>
+            </div>
+          )}
+
+          {activeSetupLogs.length > 0 && (
+            <pre className="setup-log">{activeSetupLogs.slice(-14).join("\n")}</pre>
           )}
 
           {currentStatus?.error && (

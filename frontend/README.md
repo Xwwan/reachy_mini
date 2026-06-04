@@ -82,24 +82,22 @@ frontend/dist/
   "id": "my_app",
   "title": "My App",
   "description": "显示在切换器中的简短说明。",
-  "command": [
-    "python3",
-    "-m",
-    "my_app.main",
+  "python": "python3",
+  "venv": ".venv",
+  "module": "my_app.main",
+  "args": [
     "--robot-host",
     "127.0.0.1"
   ],
   "frontendUrl": "http://127.0.0.1:8042/",
   "healthUrl": "http://127.0.0.1:8042/health",
   "stopSignal": "SIGINT",
-  "setupCommand": [
-    "python3",
-    "-m",
-    "pip",
-    "install",
-    "-e",
-    "."
-  ],
+  "setup": {
+    "install": [
+      "-e",
+      "."
+    ]
+  },
   "setupHint": "首次运行前请在该 app 目录安装依赖。",
   "env": {}
 }
@@ -110,15 +108,42 @@ frontend/dist/
 - `id`：应用唯一 ID，前端和 API 都用它来启动/停止应用。
 - `title`：前端展示名称。
 - `description`：前端展示说明。
-- `command`：启动命令。App Manager 会在 app 目录中执行它。
+- `python`：用于创建虚拟环境的 Python 命令，默认 `python3`。
+- `venv`：应用自己的虚拟环境目录，推荐使用 `.venv`。
+- `module`：启动模块。App Manager 会自动展开为 `.venv/bin/python -m <module> ...args`。
+- `args`：传给启动模块的参数。
+- `command`：可选的完整启动命令。如果提供，会优先于 `module` 使用。
 - `frontendUrl`：应用自己的页面地址。有值时，前端会用 iframe 内嵌，并提供新窗口打开按钮。
 - `healthUrl`：预留的健康检查地址。
 - `stopSignal`：停止应用时发送的信号，默认 `SIGINT`。
-- `setupCommand`：推荐的依赖安装命令。当前只展示提示，不会自动执行。
+- `setup.install`：Setup 按钮会执行的 pip install 参数。上例会执行 `.venv/bin/python -m pip install -e .`。
 - `setupHint`：前端展示的安装或运行提示。
 - `env`：启动应用时附加的环境变量。
 
 没有 `reachy-app.json` 的目录仍会出现在列表中，但 Start 按钮会禁用。
+
+## Setup 与 Start
+
+为了避免污染全局 Python 环境，推荐每个 app 都使用自己的 `.venv`。
+
+前端里的行为是：
+
+```text
+没有 .venv
+  -> 显示 Setup 按钮
+  -> Start 按钮不可用
+
+点击 Setup
+  -> App Manager 执行 python3 -m venv .venv
+  -> 升级 pip
+  -> 按 setup.install 安装依赖
+  -> 前端显示最近的安装日志
+
+安装成功
+  -> Start 按钮可用
+```
+
+Start 不会偷偷安装依赖。这样安装动作是显式的，失败时也能看到日志。
 
 ## 添加本地应用
 

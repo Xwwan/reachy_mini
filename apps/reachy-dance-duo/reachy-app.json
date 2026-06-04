@@ -2,10 +2,10 @@
   "id": "reachy_dance_duo",
   "title": "Reachy Dance Duo",
   "description": "Turn any song into a Reachy dance party with Live Groove and Beat Bandit modes.",
-  "command": [
-    "python3",
-    "-m",
-    "reachy_dance_duo",
+  "python": "python3",
+  "venv": ".venv",
+  "module": "reachy_dance_duo",
+  "args": [
     "--host",
     "0.0.0.0",
     "--port",
@@ -14,14 +14,12 @@
   "frontendUrl": "http://127.0.0.1:9000/",
   "healthUrl": "http://127.0.0.1:9000/api/status",
   "stopSignal": "SIGINT",
-  "setupCommand": [
-    "python3",
-    "-m",
-    "pip",
-    "install",
-    "-e",
-    "."
-  ],
+  "setup": {
+    "install": [
+      "-e",
+      "."
+    ]
+  },
   "setupHint": "首次运行前请在 apps/reachy-dance-duo 安装依赖；该 app 的本地 Web UI 使用 9000 端口。",
   "env": {
     "PYTHONPATH": "."

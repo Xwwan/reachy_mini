@@ -2,10 +2,10 @@
   "id": "reachy_dialogue_app",
   "title": "Reachy Dialogue App",
   "description": "Interaction API voice dialogue bridge for Reachy Mini.",
-  "command": [
-    "python3",
-    "-m",
-    "reachy_dialogue_app.reachy_dialogue_app.main",
+  "python": "python3",
+  "venv": ".venv",
+  "module": "reachy_dialogue_app.reachy_dialogue_app.main",
+  "args": [
     "--robot-host",
     "127.0.0.1",
     "--spawn-daemon"
@@ -13,6 +13,13 @@
   "frontendUrl": "http://127.0.0.1:8042/",
   "healthUrl": "http://127.0.0.1:8042/api/app-mode",
   "stopSignal": "SIGINT",
+  "setup": {
+    "install": [
+      "-e",
+      "."
+    ]
+  },
+  "setupHint": "首次运行前请安装本应用依赖，并确认对话后端服务地址配置正确。",
   "env": {
     "REACHY_DIALOGUE_SERVICE_URL": "http://127.0.0.1:12312"
   }
