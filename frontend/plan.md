@@ -190,3 +190,18 @@ current app first.
 - Default App Manager API URL to the same origin during dev via Vite proxy.
 - Keep Reachy daemon URL out of the app-switching path; individual app commands
   can still pass `--robot-host 127.0.0.1` or equivalent.
+
+## Environment Management Update
+
+The App Manager now supports two explicit runtime modes in `reachy-app.json`:
+
+- `environment: "shared"` uses the Python executable from the already-activated
+  project conda environment. Setup runs `python -m pip install ...` into that
+  shared environment and Start is allowed without checking for a per-app `.venv`.
+- `environment: "venv"` keeps the previous behavior: create/check the app's own
+  `.venv`, disable Start until setup creates it, and run the app with that venv's
+  Python.
+
+Recommended workflow: first verify all common app dependencies in a temporary
+conda environment with `python -m pip check`. Apps that pass can use `shared`;
+apps with conflicts should stay on `venv`.

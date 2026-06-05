@@ -54,12 +54,14 @@ async function loadDescriptor(appDir, fallbackId) {
   }
 
   const descriptor = JSON.parse(await readFile(descriptorPath, "utf8"));
+  const environment = normalizeEnvironment(descriptor);
   return {
     id: descriptor.id ?? fallbackId,
     title: descriptor.title ?? displayName(fallbackId),
     description: descriptor.description ?? "",
-    python: descriptor.python ?? "python3",
-    venv: descriptor.venv ?? null,
+    python: descriptor.python ?? (process.platform === "win32" ? "python" : "python3"),
+    environment,
+    venv: environment === "venv" ? descriptor.venv ?? ".venv" : null,
     module: descriptor.module ?? null,
     args: Array.isArray(descriptor.args) ? descriptor.args : [],
     command: Array.isArray(descriptor.command) ? descriptor.command : [],
@@ -72,6 +74,13 @@ async function loadDescriptor(appDir, fallbackId) {
     env: descriptor.env ?? {},
     cwd: descriptor.cwd ?? null,
   };
+}
+
+function normalizeEnvironment(descriptor) {
+  if (descriptor.environment === "shared" || descriptor.environment === "venv") {
+    return descriptor.environment;
+  }
+  return descriptor.venv ? "venv" : "shared";
 }
 
 async function scanAppsWithDescriptors() {
@@ -87,9 +96,8 @@ async function scanAppsWithDescriptors() {
       continue;
     }
 
-    const appDir = path.join(appsRoot, entry.name);
-    const appStat = await stat(appDir).catch(() => null);
-    if (!appStat?.isDirectory()) {
+    const appDir = await resolveAppDirectory(entry);
+    if (!appDir) {
       continue;
     }
 
@@ -105,6 +113,7 @@ async function scanAppsWithDescriptors() {
     const installed = descriptor ? isAppInstalled(appDir, descriptor) : false;
     const setup = descriptor ? setupInfo(id, appDir, descriptor, installed) : emptySetupInfo();
     const configured = command.length > 0;
+    const startable = configured && installed && !isSetupBlocking(setup.state);
 
     const info = {
       id,
@@ -114,9 +123,10 @@ async function scanAppsWithDescriptors() {
       hasReadme: readme.hasReadme,
       hasDescriptor: Boolean(descriptor),
       configured,
-      startable: configured && installed,
+      startable,
       command,
       python: descriptor?.python ?? null,
+      environment: descriptor?.environment ?? null,
       venv: descriptor?.venv ?? null,
       module: descriptor?.module ?? null,
       args: descriptor?.args ?? [],
@@ -134,6 +144,27 @@ async function scanAppsWithDescriptors() {
   return apps;
 }
 
+async function resolveAppDirectory(entry) {
+  const entryPath = path.join(appsRoot, entry.name);
+  const appStat = await stat(entryPath).catch(() => null);
+  if (appStat?.isDirectory()) {
+    return entryPath;
+  }
+
+  if (!appStat?.isFile()) {
+    return null;
+  }
+
+  const linkTarget = (await readFile(entryPath, "utf8").catch(() => "")).trim();
+  if (!linkTarget || linkTarget.includes("\n") || linkTarget.includes("\0")) {
+    return null;
+  }
+
+  const targetPath = path.resolve(appsRoot, linkTarget);
+  const targetStat = await stat(targetPath).catch(() => null);
+  return targetStat?.isDirectory() ? targetPath : null;
+}
+
 function resolveCommand(appDir, descriptor) {
   if (descriptor.command.length) {
     return descriptor.command;
@@ -141,7 +172,7 @@ function resolveCommand(appDir, descriptor) {
   if (!descriptor.module) {
     return [];
   }
-  const python = descriptor.venv ? venvPythonPath(appDir, descriptor.venv) : descriptor.python;
+  const python = descriptor.environment === "venv" ? venvPythonPath(appDir, descriptor.venv) : descriptor.python;
   return [python, "-m", descriptor.module, ...descriptor.args];
 }
 
@@ -153,7 +184,7 @@ function venvPythonPath(appDir, venv) {
 }
 
 function isAppInstalled(appDir, descriptor) {
-  if (!descriptor.venv) {
+  if (descriptor.environment !== "venv") {
     return true;
   }
   return existsSync(venvPythonPath(appDir, descriptor.venv));
@@ -162,17 +193,28 @@ function isAppInstalled(appDir, descriptor) {
 function setupInfo(appId, appDir, descriptor, installed) {
   const job = setupJobs.get(appId);
   const available = Boolean(
-    descriptor.venv || descriptor.setup?.install?.length || descriptor.setupCommand.length,
+    descriptor.environment === "venv" || descriptor.setup?.install?.length || descriptor.setupCommand.length,
   );
+  const needsVenv = descriptor.environment === "venv" && !installed;
+  const state = job?.state ?? (needsVenv ? "needed" : "ready");
   return {
     available,
-    required: Boolean(descriptor.venv),
+    required: descriptor.environment === "venv",
     installed,
-    state: job?.state ?? (descriptor.venv && !installed ? "needed" : "ready"),
+    state,
     error: job?.error ?? null,
     logs: job?.logs?.slice(-30) ?? [],
-    venvPath: descriptor.venv ? path.relative(repoRoot, path.join(appDir, descriptor.venv)) : null,
+    environment: descriptor.environment,
+    python: descriptor.python,
+    venvPath: descriptor.environment === "venv" ? path.relative(repoRoot, path.join(appDir, descriptor.venv)) : null,
+    target: descriptor.environment === "venv"
+      ? path.relative(repoRoot, path.join(appDir, descriptor.venv))
+      : descriptor.python,
   };
+}
+
+function isSetupBlocking(state) {
+  return state === "needed" || state === "running" || state === "error";
 }
 
 function emptySetupInfo() {
@@ -183,7 +225,10 @@ function emptySetupInfo() {
     state: "unavailable",
     error: null,
     logs: [],
+    environment: null,
+    python: null,
     venvPath: null,
+    target: null,
   };
 }
 
@@ -227,8 +272,17 @@ async function startApp(appId) {
   }
 
   const { info, descriptor, appDir } = await findApp(appId);
-  if (!info.installed) {
-    throw httpError(400, `App '${appId}' is not set up yet. Run setup first.`);
+  if (!info.startable) {
+    if (info.setup.state === "error") {
+      throw httpError(400, `App '${appId}' setup failed. Retry setup before starting.`);
+    }
+    if (info.setup.state === "running") {
+      throw httpError(400, `App '${appId}' setup is still running.`);
+    }
+    if (!info.installed || info.setup.state === "needed") {
+      throw httpError(400, `App '${appId}' is not set up yet. Run setup first.`);
+    }
+    throw httpError(400, `App '${appId}' is not startable.`);
   }
 
   const cwd = descriptor.cwd ? path.resolve(appDir, descriptor.cwd) : appDir;
@@ -378,7 +432,7 @@ async function runSetupJob(job, appDir, descriptor) {
   if (descriptor.setupCommand.length) {
     await runStep(job, descriptor.setupCommand, cwd, descriptor.env);
   } else {
-    if (descriptor.venv) {
+    if (descriptor.environment === "venv") {
       await runStep(job, [descriptor.python, "-m", "venv", descriptor.venv], cwd, descriptor.env);
       const venvPython = venvPythonPath(appDir, descriptor.venv);
       await runStep(job, [venvPython, "-m", "pip", "install", "-U", "pip"], cwd, descriptor.env);

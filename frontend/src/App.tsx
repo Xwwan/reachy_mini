@@ -43,10 +43,43 @@ function stateClass(state: string): string {
   if (state === "starting" || state === "stopping" || state === "setup") {
     return "status-working";
   }
-  if (state === "error") {
+  if (state === "error" || state === "setup failed") {
     return "status-error";
   }
   return "status-idle";
+}
+
+function runtimeLabel(app?: LocalAppInfo | null): string {
+  if (!app?.environment) {
+    return "-";
+  }
+  if (app.environment === "shared") {
+    return "shared conda";
+  }
+  return app.setup.venvPath ?? "app .venv";
+}
+
+function setupActionLabel(app: LocalAppInfo): string {
+  return app.environment === "shared" ? "Install deps" : "Setup";
+}
+
+function setupStateFor(app: LocalAppInfo | null | undefined, status: SetupStatus | null): string | null {
+  if (!app) {
+    return null;
+  }
+  return status?.appId === app.id ? status.state : app.setup.state;
+}
+
+function setupErrorFor(app: LocalAppInfo | null | undefined, status: SetupStatus | null): string | null {
+  if (!app) {
+    return null;
+  }
+  return status?.appId === app.id ? status.error ?? null : app.setup.error ?? null;
+}
+
+function canRunSetup(app: LocalAppInfo, status?: SetupStatus | null): boolean {
+  const state = setupStateFor(app, status ?? null);
+  return app.setup.available && (app.environment === "shared" || !app.installed || state === "error");
 }
 
 function App() {
@@ -82,6 +115,8 @@ function App() {
   const appPageUrl = resolveAppPageUrl(activeApp?.frontendUrl);
   const activeSetupLogs =
     setupStatus?.appId === activeApp?.id ? setupStatus?.logs ?? [] : activeApp?.setup.logs ?? [];
+  const activeSetupState = setupStateFor(activeApp, setupStatus);
+  const activeSetupError = setupErrorFor(activeApp, setupStatus);
   const connectionState = error ? "attention" : "ready";
   const actionLocked = busyAction !== null;
 
@@ -175,10 +210,10 @@ function App() {
       const started = await setupApp(base, app.id);
       setSetupStatus(started);
       const settled = await waitForSetupSettle(base, app.id, setSetupStatus);
+      await refresh();
       if (settled.state === "error") {
         throw new Error(settled.error ?? `Setup failed for ${app.title}.`);
       }
-      await refresh();
     });
   }
 
@@ -270,9 +305,13 @@ function App() {
                 const isSelected = selectedAppId === app.id || (!selectedAppId && isRunning);
                 const setupRunning =
                   app.setup.state === "running" || (setupStatus?.appId === app.id && setupStatus.state === "running");
+                const setupFailed =
+                  app.setup.state === "error" || (setupStatus?.appId === app.id && setupStatus.state === "error");
                 const needsSetup = app.setup.required && !app.installed;
                 const appState = setupRunning
                   ? "setup"
+                  : setupFailed
+                    ? "setup failed"
                   : isRunning
                     ? currentStatus?.state ?? "running"
                     : needsSetup
@@ -293,14 +332,14 @@ function App() {
                       <span className={`app-state ${stateClass(appState)}`}>{appState}</span>
                     </button>
                     <div className="app-row-actions">
-                      {app.setup.available && !app.installed && (
+                      {canRunSetup(app, setupStatus) && (
                         <button
                           onClick={() => void setupLocalApp(app)}
                           disabled={actionLocked || setupRunning}
-                          title={`Setup ${app.title}`}
+                          title={`${setupActionLabel(app)} ${app.title}`}
                         >
                           {setupRunning ? <Loader2 size={16} className="spin" /> : <Download size={16} />}
-                          <span>Setup</span>
+                          <span>{setupActionLabel(app)}</span>
                         </button>
                       )}
                       <button
@@ -309,6 +348,8 @@ function App() {
                         title={
                           app.startable
                             ? `Start ${app.title}`
+                            : setupFailed
+                              ? "Setup failed. Retry setup first"
                             : app.setup.required && !app.installed
                               ? "Run setup first"
                               : "Add reachy-app.json with module or command first"
@@ -358,10 +399,10 @@ function App() {
               <Play size={18} />
               <span>Start</span>
             </button>
-            {activeApp?.setup.available && !activeApp.installed && (
+            {activeApp && canRunSetup(activeApp, setupStatus) && (
               <button onClick={() => void setupLocalApp(activeApp)} disabled={actionLocked}>
                 <Download size={18} />
-                <span>Setup</span>
+                <span>{setupActionLabel(activeApp)}</span>
               </button>
             )}
             <button onClick={() => void stopApp()} disabled={!currentStatus || actionLocked}>
@@ -394,10 +435,20 @@ function App() {
               <strong>
                 {activeApp?.setup.required
                   ? activeApp.installed
-                    ? "ready"
-                    : activeApp.setup.state
-                  : "not required"}
+                    ? activeSetupState === "error"
+                      ? "error"
+                      : "ready"
+                    : activeSetupState
+                  : activeApp?.setup.available
+                    ? activeSetupState === "error"
+                      ? "error"
+                      : "optional"
+                    : "not required"}
               </strong>
+            </div>
+            <div>
+              <span>Runtime</span>
+              <strong>{runtimeLabel(activeApp)}</strong>
             </div>
             <div>
               <span>Updated</span>
@@ -418,6 +469,23 @@ function App() {
             <div className="notice info">
               <Download size={18} />
               <span>虚拟环境: {activeApp.setup.venvPath}</span>
+            </div>
+          )}
+
+          {activeSetupState === "error" && (
+            <div className="notice error">
+              <AlertCircle size={18} />
+              <span>{activeSetupError ?? "Setup failed. Check the log below, then retry setup."}</span>
+            </div>
+          )}
+
+          {activeApp?.environment === "shared" && activeApp.setup.available && (
+            <div className="notice info">
+              <Download size={18} />
+              <span>
+                共享环境: 使用 {activeApp.setup.python ?? activeApp.python ?? "python"} 安装/启动，请从已激活的主
+                conda 环境运行 App Manager。
+              </span>
             </div>
           )}
 
