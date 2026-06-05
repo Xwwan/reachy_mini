@@ -1,5 +1,6 @@
 export type AppState = "starting" | "running" | "done" | "stopping" | "error";
 export type SetupState = "unavailable" | "idle" | "needed" | "running" | "done" | "error" | "ready";
+export type AppEnvironment = "shared" | "venv";
 
 export interface SetupInfo {
   available: boolean;
@@ -8,7 +9,10 @@ export interface SetupInfo {
   state: SetupState;
   error?: string | null;
   logs: string[];
+  environment?: AppEnvironment | null;
+  python?: string | null;
   venvPath?: string | null;
+  target?: string | null;
 }
 
 export interface SetupStatus {
@@ -31,6 +35,7 @@ export interface LocalAppInfo {
   startable: boolean;
   command: string[];
   python?: string | null;
+  environment?: AppEnvironment | null;
   venv?: string | null;
   module?: string | null;
   args?: string[];

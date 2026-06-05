@@ -20,7 +20,7 @@
           -> frontend/server/app-manager.mjs
               -> 扫描 ../apps
               -> 读取 reachy-app.json
-              -> 创建/检测 app 专属 .venv
+              -> 使用共享 conda 环境或创建/检测 app 专属 .venv
               -> 启动/停止单个 app 子进程
                   -> app 自己连接 Reachy Mini daemon 或其他后端
 ```
@@ -86,8 +86,9 @@ http://localhost:5173/
   "id": "my_app",
   "title": "My App",
   "description": "显示在切换器中的简短说明。",
-  "python": "python3",
-  "venv": ".venv",
+  "environment": "shared",
+  "python": "python",
+  "venv": null,
   "module": "my_app.main",
   "args": [],
   "frontendUrl": "http://127.0.0.1:8042/",
@@ -103,15 +104,24 @@ http://localhost:5173/
 
 行为：
 
-- 如果 `venv` 指定的 `.venv` 不存在，前端显示 `Setup`，禁用 `Start`。
+- `environment: "shared"`：使用启动 App Manager 时已激活的主 conda/Python 环境。`Start` 默认可用，`Install deps` 会执行 `python -m pip install ...setup.install` 安装到当前环境。
+- `environment: "venv"`：使用 app 独立 `.venv`。如果 `venv` 指定的 `.venv` 不存在，前端显示 `Setup`，禁用 `Start`。
 - 点击 `Setup` 后，App Manager 会：
   - 执行 `python3 -m venv .venv`
   - 执行 `.venv/bin/python -m pip install -U pip`
   - 执行 `.venv/bin/python -m pip install ...setup.install`
 - 安装成功后，`Start` 可用。
 - `Start` 不会偷偷安装依赖。
+- 安装失败后，前端显示 `setup failed`，禁用 `Start`，保留最近 setup 日志，并允许再次点击 `Setup` / `Install deps` 重试。
 
 也保留了 `command` 兼容字段：如果 descriptor 提供 `command`，App Manager 会优先使用它。
+
+环境管理建议：
+
+- 当前倾向先验证共享主 conda 环境是否能容纳所有常用 app 依赖；验证通过后，自研/常用 app 可以使用 `environment: "shared"`。
+- 依赖冲突明显、第三方 demo 或需要隔离的 app 继续使用 `environment: "venv"`。
+- 使用共享环境时，必须先激活主 conda 环境，再运行 `npm run server`，否则 `python`/`pip` 可能指向错误环境。
+- 验证共享环境时建议先在临时 conda 环境里逐个 `pip install -e ...`，最后执行 `python -m pip check`。
 
 ## 已接入应用
 
@@ -140,6 +150,15 @@ http://localhost:5173/
   - frontend: `http://127.0.0.1:9000/`
   - setup: `pip install -e .`
 
+- `apps/reachy_mirror/reachy-app.json`
+  - `id`: `reachy_mirror`
+  - environment: `shared`
+  - module: `reachy_mirror.main`
+  - frontend: `http://127.0.0.1:7860/`
+  - health: `http://127.0.0.1:7860/ready`
+  - setup: `pip install -e .`
+  - 主要依赖：`opencv-python`、`numpy`、`mediapipe==0.10.14`
+
 - `reachy_dialogue_app/reachy-app.json`
   - 通过软链接接入：`apps/reachy_dialogue_app -> ../reachy_dialogue_app`
   - `id`: `reachy_dialogue_app`
@@ -149,7 +168,7 @@ http://localhost:5173/
   - frontend: `http://127.0.0.1:8042/`
   - setup: `pip install -e .`
 
-注意：`clawbody` 和 `cookAIware` 都使用 7860 端口，但 App Manager 同一时间只运行一个 app，正常切换时不会冲突。
+注意：`clawbody`、`cookAIware` 和 `reachy_mirror` 都使用 7860 端口，但 App Manager 同一时间只运行一个 app，正常切换时不会冲突。
 
 ## 已验证内容
 
@@ -171,7 +190,7 @@ http://localhost:5173/
 - Dev proxy 开关。
 - app 列表。
 - app setup 状态展示。
-- Setup 按钮。
+- Setup / Install deps 按钮。
 - Setup 日志展示。
 - Start / Stop / Restart。
 - 当前 app 状态展示。
@@ -199,6 +218,6 @@ http://localhost:5173/
 ## 重要注意
 
 - 不要把所有 app 依赖安装到全局 Python 环境。
-- 推荐每个 app 独立 `.venv`，由前端 Setup 触发创建。
+- 当前推荐优先验证共享主 conda 环境；验证通过的 app 可用 `environment: "shared"`，冲突 app 再用独立 `.venv`。
 - App Manager 是 Node 脚本，不需要 Python/FastAPI 依赖。
 - App Manager 的提升权限只用于本地监听端口和访问本机 API；正常用户终端运行不需要特殊处理。
