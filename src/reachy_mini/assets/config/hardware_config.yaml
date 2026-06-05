@@ -153,7 +153,7 @@ motors:
         - 0
   - left_arm_2:
       id: 18
-      offset: -1024
+      offset: 1024
       software_zero_offset_rad: 1.3744468
       lower_limit: 1826
       upper_limit: 3096

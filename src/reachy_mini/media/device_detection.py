@@ -415,7 +415,8 @@ def find_video_device(
 
     The returned path string is platform-specific:
 
-    * **Linux V4L2** — ``/dev/videoN`` from ``api.v4l2.path``.
+    * **Linux V4L2** — ``/dev/videoN`` from ``api.v4l2.path`` or
+      ``device.path`` (GStreamer 1.24+).
     * **RPi CSI (imx708)** — the literal string ``"imx708"``.
     * **Windows** — the display name (for ``mfvideosrc``).
     * **macOS** — the device index as a string (for ``avfvideosrc``).
@@ -443,8 +444,14 @@ def find_video_device(
 
             match current_platform:
                 case "Linux":
-                    if "api.v4l2.path" in props:
-                        device_path = props["api.v4l2.path"]
+                    # GStreamer ≤1.22 uses api.v4l2.path; 1.24+ often exposes device.path
+                    # with device.api=v4l2 (see GstDeviceMonitor property names).
+                    device_path = props.get("api.v4l2.path") or (
+                        props["device.path"]
+                        if props.get("device.api") == "v4l2" and props.get("device.path")
+                        else ""
+                    )
+                    if device_path:
                         _logger.debug("Found %s camera at %s", cam_name, device_path)
                         return device_path, _make_camera_specs(cam_name)
                     elif cam_name == "imx708":
