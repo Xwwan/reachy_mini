@@ -2,6 +2,7 @@
   "id": "clawbody",
   "title": "ClawBody",
   "description": "OpenClaw AI with Reachy Mini body, voice conversation, vision, and face tracking.",
+  "environment": "venv",
   "python": "python3",
   "venv": ".venv",
   "module": "reachy_mini_openclaw.main",

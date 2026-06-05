@@ -2,6 +2,7 @@
   "id": "cookAIware",
   "title": "cookAIware",
   "description": "Family food inventory, weekly meal planning, shopping list, and Reachy Mini voice assistant.",
+  "environment": "venv",
   "python": "python3",
   "venv": ".venv",
   "module": "cookAIware.main",
