@@ -2,6 +2,7 @@
   "id": "reachy_dialogue_app",
   "title": "Reachy Dialogue App",
   "description": "Interaction API voice dialogue bridge for Reachy Mini.",
+  "environment": "venv",
   "python": "python3",
   "venv": ".venv",
   "module": "reachy_dialogue_app.reachy_dialogue_app.main",

@@ -1,0 +1,23 @@
+{
+  "id": "reachy_mirror",
+  "title": "Reachy Mirror",
+  "description": "Mimic your head and hand movements with Reachy Mini using camera-based tracking.",
+  "environment": "venv",
+  "python": "python",
+  "venv": ".venv",
+  "module": "reachy_mirror.main",
+  "args": [],
+  "frontendUrl": "http://127.0.0.1:7860/",
+  "healthUrl": "http://127.0.0.1:7860/ready",
+  "stopSignal": "SIGINT",
+  "setup": {
+    "install": [
+      "-e",
+      "."
+    ]
+  },
+  "setupHint": "建议先激活主 conda 环境，再点击 Install deps；本应用需要 opencv-python、numpy、mediapipe==0.10.14，并使用 7860 端口。",
+  "env": {
+    "PYTHONPATH": "."
+  }
+}
