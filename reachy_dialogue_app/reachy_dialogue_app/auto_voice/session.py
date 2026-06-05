@@ -346,6 +346,7 @@ class AutoVoiceSession:
 
     def _process_text_chat_session(self, transcript: str) -> None:
         output_audio_seconds = 0.0
+        output_audio_started_at: float | None = None
         reply_parts: list[str] = []
         try:
             self._set_state("assistant_streaming")
@@ -362,7 +363,10 @@ class AutoVoiceSession:
                     if delta:
                         reply_parts.append(delta)
                 if event == "audio":
-                    output_audio_seconds += audio_duration_from_payload(data)
+                    audio_seconds = audio_duration_from_payload(data)
+                    if audio_seconds > 0 and output_audio_started_at is None:
+                        output_audio_started_at = time.monotonic()
+                    output_audio_seconds += audio_seconds
                 if event == "done":
                     data = dict(data)
                     data.setdefault("transcript", transcript)
@@ -377,7 +381,11 @@ class AutoVoiceSession:
                 self._emit(event, data)
                 if event == "done":
                     self._set_state("speaking" if output_audio_seconds > 0 else "cooldown")
-                    self._wait_for_output_playback(barrier, output_audio_seconds)
+                    self._wait_for_output_playback(
+                        barrier,
+                        output_audio_seconds,
+                        output_audio_started_at,
+                    )
                     self._touch_awake_activity()
                     self._emit("playback_done", {"ok": True, "session_id": self.session_id})
                     self._cooldown_then_listen()
@@ -396,6 +404,7 @@ class AutoVoiceSession:
         self._set_state("transcribing")
 
         output_audio_seconds = 0.0
+        output_audio_started_at: float | None = None
         try:
             self._set_state("assistant_streaming")
             for item in self.interaction_client.live_finish_stream(
@@ -407,7 +416,10 @@ class AutoVoiceSession:
                 event = item.event
                 data = item.data
                 if event == "audio":
-                    output_audio_seconds += audio_duration_from_payload(data)
+                    audio_seconds = audio_duration_from_payload(data)
+                    if audio_seconds > 0 and output_audio_started_at is None:
+                        output_audio_started_at = time.monotonic()
+                    output_audio_seconds += audio_seconds
                 barrier: threading.Event | None = None
                 extras: list[tuple[str, dict[str, Any]]] = []
                 if self.stream_hook is not None and event in {"audio", "done"}:
@@ -417,7 +429,11 @@ class AutoVoiceSession:
                 self._emit(event, data)
                 if event == "done":
                     self._set_state("speaking" if output_audio_seconds > 0 else "cooldown")
-                    self._wait_for_output_playback(barrier, output_audio_seconds)
+                    self._wait_for_output_playback(
+                        barrier,
+                        output_audio_seconds,
+                        output_audio_started_at,
+                    )
                     self._emit("playback_done", {"ok": True, "session_id": self.session_id})
                     self._cooldown_then_listen()
                     return
@@ -533,6 +549,7 @@ class AutoVoiceSession:
         self,
         barrier: threading.Event | None,
         output_audio_seconds: float,
+        output_audio_started_at: float | None,
     ) -> None:
         if barrier is not None:
             barrier.wait(timeout=max(0.0, float(self.config.service_timeout_seconds)))
@@ -540,8 +557,13 @@ class AutoVoiceSession:
         if output_audio_seconds <= 0:
             return
         estimated_wait = output_audio_seconds + self.config.playback_wait_grace_seconds
-        max_wait = max(0.0, self.config.playback_wait_max_seconds)
-        time.sleep(max(0.0, min(estimated_wait, max_wait)))
+        if output_audio_started_at is not None:
+            elapsed_since_audio_start = time.monotonic() - output_audio_started_at
+            estimated_wait -= elapsed_since_audio_start
+        max_wait = float(self.config.playback_wait_max_seconds)
+        if max_wait > 0:
+            estimated_wait = min(estimated_wait, max_wait)
+        time.sleep(max(0.0, estimated_wait))
 
     def _cooldown_then_listen(self) -> None:
         self._set_state("cooldown")

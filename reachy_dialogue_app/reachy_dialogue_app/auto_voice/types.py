@@ -32,9 +32,9 @@ class AutoVoiceConfig:
     local_chunk_queue_size: int = 80
     robot_poll_seconds: float = 0.01
     transcript_poll_seconds: float = 0.3
-    service_timeout_seconds: int = 8
+    service_timeout_seconds: int = 120
     playback_wait_grace_seconds: float = 0.1
-    playback_wait_max_seconds: float = 8.0
+    playback_wait_max_seconds: float = 0.0
     wake_gate: WakeGateConfig = field(default_factory=WakeGateConfig)
 
 

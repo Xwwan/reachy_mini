@@ -3,8 +3,10 @@ import threading
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from reachy_dialogue_app.reachy_dialogue_app.auto_voice import manager as manager_module
+from reachy_dialogue_app.reachy_dialogue_app.auto_voice import session as session_module
 from reachy_dialogue_app.reachy_dialogue_app.auto_voice.config import AutoVoiceConfig
 from reachy_dialogue_app.reachy_dialogue_app.auto_voice.session import AutoVoiceSession
 from reachy_dialogue_app.reachy_dialogue_app.auto_voice.types import WakeGateConfig
@@ -224,3 +226,30 @@ def test_auto_voice_finish_stream_uses_interaction_events() -> None:
     assert ("audio", barriers[0][1]) in emitted
     assert ("done", barriers[1][1]) in emitted
     assert any(event == "playback_done" for event, _ in emitted)
+
+
+def test_auto_voice_playback_wait_subtracts_streamed_audio_time(monkeypatch) -> None:
+    client = FakeLiveClient()
+    session = _make_session(client)
+    sleeps = []
+
+    class FakeTime:
+        @staticmethod
+        def monotonic() -> float:
+            return 13.0
+
+        @staticmethod
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+    monkeypatch.setattr(session_module, "time", FakeTime)
+
+    session.config.playback_wait_grace_seconds = 0.1
+    session.config.playback_wait_max_seconds = 0.0
+    session._wait_for_output_playback(
+        barrier=None,
+        output_audio_seconds=5.0,
+        output_audio_started_at=10.0,
+    )
+
+    assert sleeps == [pytest.approx(2.1)]

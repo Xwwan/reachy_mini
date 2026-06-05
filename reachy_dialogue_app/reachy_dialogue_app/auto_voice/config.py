@@ -86,7 +86,7 @@ def _auto_voice_config(behavior_config: dict[str, Any] | None = None) -> AutoVoi
             auto_voice,
             "service_timeout_seconds",
             "REACHY_DIALOGUE_AUTO_VOICE_SERVICE_TIMEOUT_SECONDS",
-            8,
+            120,
         ),
         playback_wait_grace_seconds=_float_setting(
             auto_voice,
@@ -98,7 +98,7 @@ def _auto_voice_config(behavior_config: dict[str, Any] | None = None) -> AutoVoi
             auto_voice,
             "playback_wait_max_seconds",
             "REACHY_DIALOGUE_AUTO_VOICE_PLAYBACK_WAIT_MAX_SECONDS",
-            8.0,
+            0.0,
         ),
         wake_gate=_wake_gate_config(auto_voice),
     )

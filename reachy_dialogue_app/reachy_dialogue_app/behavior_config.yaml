@@ -6,9 +6,9 @@ auto_voice:
   local_chunk_queue_size: 80
   robot_poll_seconds: 0.01
   transcript_poll_seconds: 0.3
-  service_timeout_seconds: 8
+  service_timeout_seconds: 120
   playback_wait_grace_seconds: 0.1
-  playback_wait_max_seconds: 8.0
+  playback_wait_max_seconds: 0.0
   wake_gate:
     enabled: true
     wake_phrases:
