@@ -4,7 +4,9 @@ import threading
 from typing import Any, Callable
 
 from ..audio.playback import (
+    NullPlaybackSink,
     RobotAudioPlaybackScheduler,
+    RobotPlaybackSink,
     _new_playback_key,
     _optional_int,
     _playback_metadata_from_payload,
@@ -28,6 +30,12 @@ def _auto_voice_stream_hook_factory(
         tuple[list[tuple[str, dict[str, Any]]], threading.Event | None],
     ],
 ]:
+    playback_sink = (
+        RobotPlaybackSink(playback_scheduler)
+        if playback_scheduler is not None
+        else NullPlaybackSink()
+    )
+
     def factory(session_id: str):
         playback_key = _new_playback_key(f"auto-voice-{session_id}")
 
@@ -41,11 +49,11 @@ def _auto_voice_stream_hook_factory(
             if event == "audio":
                 audio_base64 = data.get("audio_base64")
                 if (
-                    playback_scheduler is not None
+                    playback_sink.active
                     and isinstance(audio_base64, str)
                     and audio_base64
                 ):
-                    playback_scheduler.enqueue_audio(
+                    playback_sink.enqueue_audio(
                         key,
                         audio_base64=audio_base64,
                         sample_rate=int(
@@ -71,11 +79,11 @@ def _auto_voice_stream_hook_factory(
 
             audio_base64 = data.get("audio_base64")
             if (
-                playback_scheduler is not None
+                playback_sink.active
                 and isinstance(audio_base64, str)
                 and audio_base64
             ):
-                playback_scheduler.enqueue_audio(
+                playback_sink.enqueue_audio(
                     key,
                     audio_base64=audio_base64,
                     sample_rate=int(
@@ -88,11 +96,11 @@ def _auto_voice_stream_hook_factory(
                     playback_metadata=playback_metadata,
                 )
 
-            if playback_scheduler is None:
+            if not playback_sink.active:
                 return extras, None
 
             done_event = threading.Event()
-            playback_scheduler.complete(
+            playback_sink.complete(
                 key,
                 action_signal=_first_ok_module_key(behavior_results, "action"),
                 action_config=_module_config(behavior_config, "action"),
@@ -104,4 +112,3 @@ def _auto_voice_stream_hook_factory(
         return hook
 
     return factory
-

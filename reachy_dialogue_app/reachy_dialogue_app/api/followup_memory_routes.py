@@ -8,7 +8,9 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 
 from ..audio.playback import (
+    NullPlaybackSink,
     RobotAudioPlaybackScheduler,
+    RobotPlaybackSink,
     _new_playback_key,
     _optional_int,
     _playback_metadata_from_payload,
@@ -36,6 +38,12 @@ def _register_followup_memory_routes(
     playback_scheduler: RobotAudioPlaybackScheduler | None = None,
     client_factory: Callable[[str], InteractionApiClient] = InteractionApiClient,
 ) -> None:
+    playback_sink = (
+        RobotPlaybackSink(playback_scheduler)
+        if playback_scheduler is not None
+        else NullPlaybackSink()
+    )
+
     @app.get("/api/followups/pending")
     def list_pending_followups() -> dict[str, Any]:
         current = _snapshot(settings, settings_lock)
@@ -101,7 +109,7 @@ def _register_followup_memory_routes(
                     if event == "audio":
                         audio_base64 = data.get("audio_base64")
                         if (
-                            playback_scheduler is not None
+                            playback_sink.active
                             and isinstance(audio_base64, str)
                             and audio_base64
                         ):
@@ -109,7 +117,7 @@ def _register_followup_memory_routes(
                                 data,
                                 _new_playback_key("followup"),
                             )
-                            playback_scheduler.enqueue_audio(
+                            playback_sink.enqueue_audio(
                                 metadata.playback_key,
                                 audio_base64=audio_base64,
                                 sample_rate=int(
@@ -132,13 +140,13 @@ def _register_followup_memory_routes(
                             data,
                             _new_playback_key("followup"),
                         )
-                        if playback_scheduler is not None:
+                        if playback_sink.active:
                             behavior_results = behavior_results_by_key.pop(
                                 metadata.playback_key,
                                 [],
                             )
                             playback_done = threading.Event()
-                            playback_scheduler.complete(
+                            playback_sink.complete(
                                 metadata.playback_key,
                                 action_signal=_first_ok_module_key(
                                     behavior_results,
@@ -162,7 +170,7 @@ def _register_followup_memory_routes(
                                     "phase": "followup",
                                 },
                             )
-                        elif playback_scheduler is None:
+                        elif not playback_sink.active:
                             yield _sse_frame(
                                 "playback_done",
                                 {

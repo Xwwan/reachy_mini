@@ -8,7 +8,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
 from ..audio.playback import (
+    NullPlaybackSink,
     RobotAudioPlaybackScheduler,
+    RobotPlaybackSink,
     _new_playback_key,
     _optional_int,
     _playback_metadata_from_payload,
@@ -48,6 +50,12 @@ def _register_interaction_routes(
     playback_scheduler: RobotAudioPlaybackScheduler | None = None,
     client_factory: Callable[[str], InteractionApiClient] = InteractionApiClient,
 ) -> None:
+    playback_sink = (
+        RobotPlaybackSink(playback_scheduler)
+        if playback_scheduler is not None
+        else NullPlaybackSink()
+    )
+
     @app.post("/api/interaction/session")
     def create_interaction_session(
         payload: InteractionSessionPayload,
@@ -137,7 +145,7 @@ def _register_interaction_routes(
                     if event == "audio":
                         audio_base64 = data.get("audio_base64")
                         if (
-                            playback_scheduler is not None
+                            playback_sink.active
                             and isinstance(audio_base64, str)
                             and audio_base64
                         ):
@@ -145,7 +153,7 @@ def _register_interaction_routes(
                                 data,
                                 playback_key or fallback_playback_key,
                             )
-                            playback_key = playback_scheduler.enqueue_audio(
+                            playback_key = playback_sink.enqueue_audio(
                                 metadata.playback_key,
                                 audio_base64=audio_base64,
                                 sample_rate=int(
@@ -174,13 +182,13 @@ def _register_interaction_routes(
                                 _behavior_result_payload(result),
                             )
                         playback_done: threading.Event | None = None
-                        if playback_scheduler is not None and playback_key:
+                        if playback_sink.active and playback_key:
                             metadata = _playback_metadata_from_payload(
                                 data,
                                 playback_key,
                             )
                             playback_done = threading.Event()
-                            playback_scheduler.complete(
+                            playback_sink.complete(
                                 playback_key,
                                 action_signal=_first_ok_module_key(
                                     behavior_results,
@@ -201,7 +209,7 @@ def _register_interaction_routes(
                                 "playback_done",
                                 {"ok": True, "playback_key": playback_key},
                             )
-                        elif playback_scheduler is None:
+                        elif not playback_sink.active:
                             yield _sse_frame(
                                 "playback_done",
                                 {"ok": True, "skipped": True},
@@ -210,14 +218,14 @@ def _register_interaction_routes(
 
                     yield _sse_frame(event, data)
                     if event == "error":
-                        if playback_scheduler is not None:
-                            playback_scheduler.abort(
+                        if playback_sink.active:
+                            playback_sink.abort(
                                 playback_key or fallback_playback_key
                             )
                         return
             except InteractionApiError as exc:
-                if not playback_completed and playback_scheduler is not None:
-                    playback_scheduler.abort(playback_key or fallback_playback_key)
+                if not playback_completed and playback_sink.active:
+                    playback_sink.abort(playback_key or fallback_playback_key)
                 yield _sse_frame(
                     "error",
                     {
@@ -226,8 +234,8 @@ def _register_interaction_routes(
                     },
                 )
             except Exception as exc:
-                if not playback_completed and playback_scheduler is not None:
-                    playback_scheduler.abort(playback_key or fallback_playback_key)
+                if not playback_completed and playback_sink.active:
+                    playback_sink.abort(playback_key or fallback_playback_key)
                 yield _sse_frame(
                     "error",
                     {"message": str(exc) or exc.__class__.__name__},
@@ -350,7 +358,7 @@ def _register_interaction_routes(
                     if event == "audio":
                         audio_base64 = data.get("audio_base64")
                         if (
-                            playback_scheduler is not None
+                            playback_sink.active
                             and isinstance(audio_base64, str)
                             and audio_base64
                         ):
@@ -358,7 +366,7 @@ def _register_interaction_routes(
                                 data,
                                 playback_key or fallback_playback_key,
                             )
-                            playback_key = playback_scheduler.enqueue_audio(
+                            playback_key = playback_sink.enqueue_audio(
                                 metadata.playback_key,
                                 audio_base64=audio_base64,
                                 sample_rate=int(
@@ -387,13 +395,13 @@ def _register_interaction_routes(
                                 _behavior_result_payload(result),
                             )
                         playback_done: threading.Event | None = None
-                        if playback_scheduler is not None and playback_key:
+                        if playback_sink.active and playback_key:
                             metadata = _playback_metadata_from_payload(
                                 data,
                                 playback_key,
                             )
                             playback_done = threading.Event()
-                            playback_scheduler.complete(
+                            playback_sink.complete(
                                 playback_key,
                                 action_signal=_first_ok_module_key(
                                     behavior_results,
@@ -414,7 +422,7 @@ def _register_interaction_routes(
                                 "playback_done",
                                 {"ok": True, "playback_key": playback_key},
                             )
-                        elif playback_scheduler is None:
+                        elif not playback_sink.active:
                             yield _sse_frame(
                                 "playback_done",
                                 {"ok": True, "skipped": True},
@@ -423,14 +431,14 @@ def _register_interaction_routes(
 
                     yield _sse_frame(event, data)
                     if event == "error":
-                        if playback_scheduler is not None:
-                            playback_scheduler.abort(
+                        if playback_sink.active:
+                            playback_sink.abort(
                                 playback_key or fallback_playback_key
                             )
                         return
             except InteractionApiError as exc:
-                if not playback_completed and playback_scheduler is not None:
-                    playback_scheduler.abort(playback_key or fallback_playback_key)
+                if not playback_completed and playback_sink.active:
+                    playback_sink.abort(playback_key or fallback_playback_key)
                 yield _sse_frame(
                     "error",
                     {
@@ -439,8 +447,8 @@ def _register_interaction_routes(
                     },
                 )
             except Exception as exc:
-                if not playback_completed and playback_scheduler is not None:
-                    playback_scheduler.abort(playback_key or fallback_playback_key)
+                if not playback_completed and playback_sink.active:
+                    playback_sink.abort(playback_key or fallback_playback_key)
                 yield _sse_frame(
                     "error",
                     {"message": str(exc) or exc.__class__.__name__},

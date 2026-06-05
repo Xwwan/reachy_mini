@@ -42,6 +42,11 @@ const state = {
     autoPendingBytes: new Uint8Array(0),
     autoSendQueue: [],
     autoSendLoopRunning: false,
+    playbackSink: {
+        async ensureReady() {},
+        unlockFromGesture() {},
+        async handleAudio() {},
+    },
     followupPending: [],
     followupEventSource: null,
     followupStreaming: false,
@@ -125,6 +130,7 @@ async function loadSettings() {
     const mode = await modeResponse.json();
     state.settings = settings;
     state.appMode = mode;
+    state.playbackSink = mode.web_only ? new BrowserPlaybackSink() : new NullPlaybackSink();
     els.serviceUrl.value = settings.service_url || "";
     els.conversationId.value = settings.conversation_id || "reachy-mini-voice";
     if (mode.web_only) {
@@ -206,6 +212,7 @@ async function sendText() {
         setStatus("请输入内容");
         return;
     }
+    await ensurePlaybackContext();
     await ensureSession("text");
     const userMessage = addMessage("user", message, "done");
     const assistantMessage = addMessage("assistant", "", "streaming");
@@ -303,6 +310,7 @@ async function interactionLiveStart(inputMode) {
 
 async function finishLive() {
     if (!state.activeLiveMode) return;
+    await ensurePlaybackContext();
     setStatus("正在结束语音");
     stopTranscriptPolling();
     if (state.activeLiveMode === "local") {
@@ -342,6 +350,7 @@ async function finishLive() {
 
 async function startAutoVoice(mode) {
     if (state.autoVoiceSessionId) return;
+    await ensurePlaybackContext();
     const normalizedMode = mode === "robot" ? "robot" : "local";
     await saveSettings();
     const response = await fetch("/api/auto-voice/start", {
@@ -666,6 +675,7 @@ function toggleFollowupStream() {
         closeFollowupStream();
         return;
     }
+    ensurePlaybackContext().catch((error) => setStatus(error.message || String(error)));
     if (typeof EventSource !== "function") {
         setStatus("当前浏览器不支持 EventSource");
         return;
@@ -934,6 +944,7 @@ function handleStreamEvent(event, data, context = {}) {
         if (stageText) addMessage("system", stageText, "done");
     }
     if (event === "audio") {
+        playBrowserPcmChunk(data).catch((error) => setStatus(error.message || String(error)));
         setStatus("收到音频事件");
     }
     if (event === "followup") {
@@ -1208,27 +1219,126 @@ function bytesToBase64(bytes) {
     return btoa(binary);
 }
 
+function base64ToBytes(value) {
+    if (!value) return new Uint8Array(0);
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+}
+
+async function ensurePlaybackContext() {
+    await state.playbackSink.ensureReady();
+}
+
+function unlockPlaybackFromGesture() {
+    state.playbackSink.unlockFromGesture();
+}
+
+async function playBrowserPcmChunk(data) {
+    await state.playbackSink.handleAudio(data);
+}
+
+class NullPlaybackSink {
+    async ensureReady() {}
+    unlockFromGesture() {}
+    async handleAudio() {}
+}
+
+class BrowserPlaybackSink {
+    constructor() {
+        this.context = null;
+        this.nextTime = 0;
+    }
+
+    async ensureReady() {
+        this.unlockFromGesture();
+        if (!this.context) {
+            throw new Error("当前浏览器不支持 AudioContext");
+        }
+        if (this.context.state === "suspended") {
+            await this.context.resume();
+        }
+    }
+
+    unlockFromGesture() {
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextCtor) return;
+        if (!this.context || this.context.state === "closed") {
+            this.context = new AudioContextCtor();
+            this.nextTime = this.context.currentTime;
+        }
+        if (this.context.state === "suspended") {
+            this.context.resume().catch(() => {});
+        }
+    }
+
+    async handleAudio(data) {
+        const audioBase64 = data?.audio_base64;
+        if (typeof audioBase64 !== "string" || !audioBase64) return;
+        await this.ensureReady();
+        const bytes = base64ToBytes(audioBase64);
+        if (!bytes.length || !this.context) return;
+        const rawSampleRate = Number(data.sample_rate || data.audio_sample_rate || 24000);
+        const sampleRate = Number.isFinite(rawSampleRate) && rawSampleRate > 0
+            ? rawSampleRate
+            : 24000;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const sampleCount = Math.floor(bytes.length / 2);
+        const buffer = this.context.createBuffer(1, sampleCount, sampleRate);
+        const channel = buffer.getChannelData(0);
+        for (let i = 0; i < sampleCount; i += 1) {
+            channel[i] = view.getInt16(i * 2, true) / 32768;
+        }
+        const source = this.context.createBufferSource();
+        source.buffer = buffer;
+        source.connect(this.context.destination);
+        const startAt = Math.max(this.context.currentTime + 0.02, this.nextTime);
+        source.start(startAt);
+        this.nextTime = startAt + buffer.duration;
+        setStatus(`浏览器播放音频 ${Math.round(buffer.duration * 1000)}ms`);
+    }
+}
+
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function wireEvents() {
+    document.addEventListener("pointerdown", unlockPlaybackFromGesture, { passive: true });
     els.healthBtn.addEventListener("click", () => checkHealth().catch((error) => setStatus(error.message)));
     els.newSessionBtn.addEventListener("click", () => createInteractionSession("text").catch((error) => setStatus(error.message)));
-    els.sendTextBtn.addEventListener("click", () => sendText().catch((error) => setStatus(error.message)));
+    els.sendTextBtn.addEventListener("click", () => {
+        unlockPlaybackFromGesture();
+        sendText().catch((error) => setStatus(error.message));
+    });
     els.localLiveBtn.addEventListener("click", () => startLocalLive().catch((error) => setStatus(error.message)));
     els.robotLiveBtn.addEventListener("click", () => startRobotLive().catch((error) => setStatus(error.message)));
-    els.finishLiveBtn.addEventListener("click", () => finishLive().catch((error) => setStatus(error.message)));
+    els.finishLiveBtn.addEventListener("click", () => {
+        unlockPlaybackFromGesture();
+        finishLive().catch((error) => setStatus(error.message));
+    });
     els.abortLiveBtn.addEventListener("click", () => abortLive().catch((error) => setStatus(error.message)));
-    els.autoLocalBtn.addEventListener("click", () => startAutoVoice("local").catch((error) => setStatus(error.message)));
-    els.autoRobotBtn.addEventListener("click", () => startAutoVoice("robot").catch((error) => setStatus(error.message)));
+    els.autoLocalBtn.addEventListener("click", () => {
+        unlockPlaybackFromGesture();
+        startAutoVoice("local").catch((error) => setStatus(error.message));
+    });
+    els.autoRobotBtn.addEventListener("click", () => {
+        unlockPlaybackFromGesture();
+        startAutoVoice("robot").catch((error) => setStatus(error.message));
+    });
     els.autoStopBtn.addEventListener("click", () => stopAutoVoice().catch((error) => setStatus(error.message)));
     els.refreshSessionBtn.addEventListener("click", () => refreshSessionState().catch((error) => setStatus(error.message)));
     els.listRunsBtn.addEventListener("click", () => listRuns().catch((error) => setStatus(error.message)));
     els.getRunBtn.addEventListener("click", () => getActiveRun().catch((error) => setStatus(error.message)));
     els.refreshFollowupsBtn.addEventListener("click", () => refreshFollowups().catch((error) => setStatus(error.message)));
     els.runFollowupsBtn.addEventListener("click", () => runPendingFollowups().catch((error) => setStatus(error.message)));
-    els.followupStreamBtn.addEventListener("click", toggleFollowupStream);
+    els.followupStreamBtn.addEventListener("click", () => {
+        unlockPlaybackFromGesture();
+        toggleFollowupStream();
+    });
     els.memoryCurateBtn.addEventListener("click", () => runMemoryCurate().catch((error) => setStatus(error.message)));
     els.profileRefreshBtn.addEventListener("click", () => refreshProfile().catch((error) => setStatus(error.message)));
     els.clearEventsBtn.addEventListener("click", clearEvents);

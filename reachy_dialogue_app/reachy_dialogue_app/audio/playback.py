@@ -5,7 +5,7 @@ import queue
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, Protocol
 
 from ..core.constants import OUTPUT_SAMPLE_RATE
 
@@ -228,6 +228,125 @@ class RobotAudioPlaybackScheduler:
 
             self.order.pop(0)
             self.groups.pop(key, None)
+
+
+class PlaybackSink(Protocol):
+    name: str
+    active: bool
+
+    def enqueue_audio(
+        self,
+        key: str | None,
+        *,
+        audio_base64: str,
+        sample_rate: int,
+        chunk_index: int | None = None,
+        segment_index: int | None = None,
+        playback_metadata: PlaybackMetadata | None = None,
+    ) -> str:
+        ...
+
+    def complete(
+        self,
+        key: str | None,
+        *,
+        action_signal: str | None = None,
+        action_config: dict[str, Any] | None = None,
+        done_event: threading.Event | None = None,
+        playback_metadata: PlaybackMetadata | None = None,
+    ) -> str:
+        ...
+
+    def abort(self, key: str | None) -> None:
+        ...
+
+
+@dataclass(frozen=True)
+class RobotPlaybackSink:
+    scheduler: RobotAudioPlaybackScheduler
+    name: str = "robot"
+    active: bool = True
+
+    def enqueue_audio(
+        self,
+        key: str | None,
+        *,
+        audio_base64: str,
+        sample_rate: int,
+        chunk_index: int | None = None,
+        segment_index: int | None = None,
+        playback_metadata: PlaybackMetadata | None = None,
+    ) -> str:
+        return self.scheduler.enqueue_audio(
+            key,
+            audio_base64=audio_base64,
+            sample_rate=sample_rate,
+            chunk_index=chunk_index,
+            segment_index=segment_index,
+            playback_metadata=playback_metadata,
+        )
+
+    def complete(
+        self,
+        key: str | None,
+        *,
+        action_signal: str | None = None,
+        action_config: dict[str, Any] | None = None,
+        done_event: threading.Event | None = None,
+        playback_metadata: PlaybackMetadata | None = None,
+    ) -> str:
+        return self.scheduler.complete(
+            key,
+            action_signal=action_signal,
+            action_config=action_config,
+            done_event=done_event,
+            playback_metadata=playback_metadata,
+        )
+
+    def abort(self, key: str | None) -> None:
+        self.scheduler.abort(key)
+
+
+@dataclass(frozen=True)
+class NullPlaybackSink:
+    name: str = "null"
+    active: bool = False
+
+    def enqueue_audio(
+        self,
+        key: str | None,
+        *,
+        audio_base64: str,
+        sample_rate: int,
+        chunk_index: int | None = None,
+        segment_index: int | None = None,
+        playback_metadata: PlaybackMetadata | None = None,
+    ) -> str:
+        return (
+            key
+            or (playback_metadata.playback_key if playback_metadata else None)
+            or _new_playback_key("null-audio")
+        )
+
+    def complete(
+        self,
+        key: str | None,
+        *,
+        action_signal: str | None = None,
+        action_config: dict[str, Any] | None = None,
+        done_event: threading.Event | None = None,
+        playback_metadata: PlaybackMetadata | None = None,
+    ) -> str:
+        if done_event is not None:
+            done_event.set()
+        return (
+            key
+            or (playback_metadata.playback_key if playback_metadata else None)
+            or _new_playback_key("null-audio")
+        )
+
+    def abort(self, key: str | None) -> None:
+        return None
 
 
 def _payload_playback_key(payload: dict[str, Any]) -> str | None:
