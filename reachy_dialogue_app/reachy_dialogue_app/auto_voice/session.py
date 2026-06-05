@@ -377,10 +377,7 @@ class AutoVoiceSession:
                 self._emit(event, data)
                 if event == "done":
                     self._set_state("speaking" if output_audio_seconds > 0 else "cooldown")
-                    if barrier is not None:
-                        barrier.wait(timeout=self.config.service_timeout_seconds)
-                    elif output_audio_seconds > 0:
-                        time.sleep(max(0.0, output_audio_seconds + 0.2))
+                    self._wait_for_output_playback(barrier, output_audio_seconds)
                     self._touch_awake_activity()
                     self._emit("playback_done", {"ok": True, "session_id": self.session_id})
                     self._cooldown_then_listen()
@@ -420,10 +417,7 @@ class AutoVoiceSession:
                 self._emit(event, data)
                 if event == "done":
                     self._set_state("speaking" if output_audio_seconds > 0 else "cooldown")
-                    if barrier is not None:
-                        barrier.wait(timeout=self.config.service_timeout_seconds)
-                    elif output_audio_seconds > 0:
-                        time.sleep(max(0.0, output_audio_seconds + 0.2))
+                    self._wait_for_output_playback(barrier, output_audio_seconds)
                     self._emit("playback_done", {"ok": True, "session_id": self.session_id})
                     self._cooldown_then_listen()
                     return
@@ -534,6 +528,20 @@ class AutoVoiceSession:
             )
         except Exception:
             pass
+
+    def _wait_for_output_playback(
+        self,
+        barrier: threading.Event | None,
+        output_audio_seconds: float,
+    ) -> None:
+        if barrier is not None:
+            barrier.wait(timeout=max(0.0, float(self.config.service_timeout_seconds)))
+            return
+        if output_audio_seconds <= 0:
+            return
+        estimated_wait = output_audio_seconds + self.config.playback_wait_grace_seconds
+        max_wait = max(0.0, self.config.playback_wait_max_seconds)
+        time.sleep(max(0.0, min(estimated_wait, max_wait)))
 
     def _cooldown_then_listen(self) -> None:
         self._set_state("cooldown")

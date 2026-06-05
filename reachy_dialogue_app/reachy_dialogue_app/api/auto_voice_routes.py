@@ -32,6 +32,8 @@ def _register_auto_voice_routes(
             "robot_poll_seconds": manager.config.robot_poll_seconds,
             "transcript_poll_seconds": manager.config.transcript_poll_seconds,
             "service_timeout_seconds": manager.config.service_timeout_seconds,
+            "playback_wait_grace_seconds": manager.config.playback_wait_grace_seconds,
+            "playback_wait_max_seconds": manager.config.playback_wait_max_seconds,
             "wake_gate": manager.config.wake_gate.__dict__,
             "vad": manager.config.vad.__dict__,
             "allow_robot": allow_robot,

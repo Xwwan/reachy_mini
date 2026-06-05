@@ -27,7 +27,9 @@ def _default_behavior_config() -> dict[str, Any]:
             "local_chunk_queue_size": 80,
             "robot_poll_seconds": 0.01,
             "transcript_poll_seconds": 0.3,
-            "service_timeout_seconds": 120,
+            "service_timeout_seconds": 8,
+            "playback_wait_grace_seconds": 0.1,
+            "playback_wait_max_seconds": 8.0,
             "vad": {
                 "speech_threshold": 0.5,
                 "rms_speech_threshold": 0.01,
@@ -242,7 +244,13 @@ def _normalize_auto_voice_config(config: dict[str, Any], *, base_dir: Path) -> N
         auto_voice.get("transcript_poll_seconds"), 0.3
     )
     auto_voice["service_timeout_seconds"] = _coerce_int(
-        auto_voice.get("service_timeout_seconds"), 120
+        auto_voice.get("service_timeout_seconds"), 8
+    )
+    auto_voice["playback_wait_grace_seconds"] = _coerce_float(
+        auto_voice.get("playback_wait_grace_seconds"), 0.1
+    )
+    auto_voice["playback_wait_max_seconds"] = _coerce_float(
+        auto_voice.get("playback_wait_max_seconds"), 8.0
     )
     vad = auto_voice.get("vad")
     if not isinstance(vad, dict):

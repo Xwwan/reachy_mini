@@ -34,6 +34,10 @@ const state = {
     transcriptTimer: null,
     autoVoiceSessionId: "",
     autoVoiceMode: "",
+    autoVoiceGateState: "",
+    autoVoiceUtteranceId: "",
+    autoVoiceUserMessage: null,
+    autoVoiceAssistantMessage: null,
     autoVoiceEventSource: null,
     autoStream: null,
     autoAudioContext: null,
@@ -369,6 +373,8 @@ async function startAutoVoice(mode) {
     }
     state.autoVoiceSessionId = payload.session_id;
     state.autoVoiceMode = normalizedMode;
+    state.autoVoiceGateState = payload.gate_state || "";
+    resetAutoVoiceTurn();
     appendEvent("auto_voice_start", payload);
     setAutoVoiceUi(true, payload.state || "listening");
     connectAutoVoiceEvents(payload.session_id);
@@ -428,7 +434,38 @@ function handleAutoVoiceEvent(event, data) {
     appendEvent(`auto:${event}`, data);
     if (data.state) setAutoVoiceUi(Boolean(state.autoVoiceSessionId), data.state);
     if (data.gate_state) {
-        els.autoVoiceStatus.textContent = `gate ${data.gate_state}`;
+        state.autoVoiceGateState = data.gate_state;
+        els.autoVoiceStatus.textContent = autoVoiceGateText(data.gate_state);
+    }
+    if (event === "utterance") {
+        beginAutoVoiceTurn(data);
+    }
+    if (event === "speech_start") {
+        beginAutoVoiceTurn(data);
+        els.liveTranscript.textContent = "检测到语音";
+    }
+    if (event === "speech_end") {
+        els.liveTranscript.textContent = "语音结束，正在识别";
+    }
+    if (event === "speech_cancelled") {
+        resetAutoVoiceTurn();
+        els.liveTranscript.textContent = "语音太短";
+    }
+    if (event === "wake_detected") {
+        els.autoVoiceStatus.textContent = data.reply || "已唤醒，请继续说";
+        setStatus(data.reply || "已唤醒，请继续说");
+    }
+    if (event === "wake_ignored") {
+        els.autoVoiceStatus.textContent = "未检测到唤醒词，未发送";
+        setStatus("未检测到唤醒词，未发送");
+    }
+    if (event === "sleep_detected") {
+        els.autoVoiceStatus.textContent = data.reply || "已进入等待唤醒";
+        setStatus(data.reply || "已进入等待唤醒");
+    }
+    if (event === "wake_timeout") {
+        els.autoVoiceStatus.textContent = "等待唤醒词";
+        setStatus("自动语音超时，等待唤醒词");
     }
     if (event === "warning") {
         els.autoVoiceStatus.textContent = data.message || "自动语音 warning";
@@ -437,17 +474,89 @@ function handleAutoVoiceEvent(event, data) {
         els.autoVoiceStatus.textContent = data.message || "自动语音错误";
         setAutoVoiceUi(false, "error");
     }
-    if ([
-        "transcript",
-        "meta",
-        "delta",
-        "audio",
-        "state_delta",
-        "done",
-        "playback_done",
-    ].includes(event)) {
+    if (event === "transcript") {
+        handleAutoVoiceTranscript(data);
+        return;
+    }
+    if (event === "done" && data.transcript) {
+        commitAutoVoiceTranscript(data.transcript);
+    }
+    if (event === "delta" || event === "done") {
+        handleStreamEvent(event, data, {
+            source: "auto-voice",
+            assistantMessage: ensureAutoVoiceAssistantMessage(),
+        });
+        return;
+    }
+    if (["meta", "audio", "state_delta", "playback_done"].includes(event)) {
         handleStreamEvent(event, data, { source: "auto-voice" });
     }
+}
+
+function beginAutoVoiceTurn(data = {}) {
+    const utteranceId = data.utterance_id || "";
+    if (utteranceId && utteranceId === state.autoVoiceUtteranceId) return;
+    state.autoVoiceUtteranceId = utteranceId || state.autoVoiceUtteranceId || `auto_${Date.now()}`;
+    state.autoVoiceUserMessage = null;
+    state.autoVoiceAssistantMessage = null;
+}
+
+function resetAutoVoiceTurn() {
+    state.autoVoiceUtteranceId = "";
+    state.autoVoiceUserMessage = null;
+    state.autoVoiceAssistantMessage = null;
+}
+
+function autoVoiceGateText(gateState) {
+    if (gateState === "waiting_wake") return "等待唤醒词";
+    if (gateState === "awake") return "已唤醒";
+    return `gate ${gateState}`;
+}
+
+function handleAutoVoiceTranscript(data) {
+    const transcript = data.transcript || data.text || "";
+    els.liveTranscript.textContent = transcript || (data.is_final ? "(未识别到文本)" : "正在听");
+    if (!transcript && data.is_final) {
+        renderStatus();
+        return;
+    }
+    if (!shouldShowAutoVoiceTranscript(data)) {
+        renderStatus();
+        return;
+    }
+    const message = ensureAutoVoiceUserMessage();
+    message.content = transcript;
+    message.status = data.is_final ? "done" : "streaming";
+    renderTimeline();
+    renderStatus();
+}
+
+function shouldShowAutoVoiceTranscript(data) {
+    if (state.autoVoiceUserMessage) return true;
+    const gateState = data.gate_state || state.autoVoiceGateState;
+    return gateState === "awake";
+}
+
+function ensureAutoVoiceUserMessage() {
+    if (!state.autoVoiceUserMessage) {
+        state.autoVoiceUserMessage = addMessage("user", "", "streaming");
+    }
+    return state.autoVoiceUserMessage;
+}
+
+function commitAutoVoiceTranscript(transcript) {
+    const text = String(transcript || "").trim();
+    if (!text || state.autoVoiceGateState === "waiting_wake") return;
+    const message = ensureAutoVoiceUserMessage();
+    message.content = text;
+    message.status = "done";
+}
+
+function ensureAutoVoiceAssistantMessage() {
+    if (!state.autoVoiceAssistantMessage) {
+        state.autoVoiceAssistantMessage = addMessage("assistant", "", "streaming");
+    }
+    return state.autoVoiceAssistantMessage;
 }
 
 function parseEventSourcePayload(raw) {
@@ -522,6 +631,8 @@ async function stopAutoVoice() {
     await stopAutoLocalCapture();
     state.autoVoiceSessionId = "";
     state.autoVoiceMode = "";
+    state.autoVoiceGateState = "";
+    resetAutoVoiceTurn();
     setAutoVoiceUi(false, "idle");
     if (!sessionId) return;
     const response = await fetch("/api/auto-voice/stop", {
