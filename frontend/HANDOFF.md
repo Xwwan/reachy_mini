@@ -219,5 +219,6 @@ http://localhost:5173/
 
 - 不要把所有 app 依赖安装到全局 Python 环境。
 - 当前推荐优先验证共享主 conda 环境；验证通过的 app 可用 `environment: "shared"`，冲突 app 再用独立 `.venv`。
+- `apps/` 是用户本地组装目录，Git 忽略其中所有 app 内容；仓库只保留 `apps/README.md` 说明安装位置和 descriptor 写法。
 - App Manager 是 Node 脚本，不需要 Python/FastAPI 依赖。
 - App Manager 的提升权限只用于本地监听端口和访问本机 API；正常用户终端运行不需要特殊处理。
