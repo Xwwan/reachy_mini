@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import csv
 import json
 import os
 import platform
@@ -18,6 +19,7 @@ import requests
 
 
 DEFAULT_APP_URL = "http://127.0.0.1:8042"
+DEFAULT_SERVICE_URL = "http://127.0.0.1:12312"
 DEFAULT_TEXT = "请用一句话回答：今天适合和 Reachy Mini 聊些什么？"
 DEFAULT_CONVERSATION_ID = "stream-probe"
 DEFAULT_WORKFLOW = "chat"
@@ -33,12 +35,31 @@ def main() -> None:
     parser.add_argument("--label", default="", help="Short label, e.g. mac or pi")
     parser.add_argument("--app-url", default=DEFAULT_APP_URL)
     parser.add_argument("--service-url", default=None)
+    parser.add_argument(
+        "--direct-service",
+        action="store_true",
+        help=(
+            "Bypass the local dialogue app and probe the Interaction service "
+            "SSE endpoint directly."
+        ),
+    )
     parser.add_argument("--conversation-id", default=DEFAULT_CONVERSATION_ID)
     parser.add_argument("--workflow", choices=("chat", "onboarding"), default=DEFAULT_WORKFLOW)
     parser.add_argument("--text", default=DEFAULT_TEXT)
     parser.add_argument("--no-tts", action="store_true")
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--print-chunks",
+        action="store_true",
+        help="Print one timing row per received PCM audio chunk.",
+    )
+    parser.add_argument(
+        "--chunks-csv",
+        type=Path,
+        default=None,
+        help="Write one timing row per received PCM audio chunk to a CSV file.",
+    )
     parser.add_argument(
         "--save-audio",
         type=Path,
@@ -63,6 +84,7 @@ def main() -> None:
         label=args.label,
         app_url=args.app_url,
         service_url=args.service_url,
+        direct_service=args.direct_service,
         conversation_id=args.conversation_id,
         workflow=args.workflow,
         text=args.text,
@@ -70,8 +92,13 @@ def main() -> None:
         timeout=args.timeout,
         save_audio=args.save_audio,
     )
+    if args.chunks_csv is not None:
+        _write_chunk_csv(result["audio_chunks"], args.chunks_csv)
     encoded = json.dumps(result, indent=2, ensure_ascii=False)
     print(encoded)
+    if args.print_chunks:
+        print()
+        print(_format_chunk_table(result["audio_chunks"]))
     if args.output is not None:
         args.output.write_text(encoded + "\n", encoding="utf-8")
 
@@ -81,6 +108,7 @@ def run_probe(
     label: str,
     app_url: str,
     service_url: str | None,
+    direct_service: bool,
     conversation_id: str,
     workflow: str,
     text: str,
@@ -89,20 +117,27 @@ def run_probe(
     save_audio: Path | None,
 ) -> dict[str, Any]:
     app_url = _with_trailing_slash(app_url)
-    if service_url:
-        settings_payload = {
-            "service_url": service_url,
-            "conversation_id": conversation_id,
-        }
-        settings_response = requests.post(
-            urljoin(app_url, "api/settings"),
-            json=settings_payload,
-            timeout=10,
-        )
-        settings_response.raise_for_status()
+    if direct_service:
+        service_url = _with_trailing_slash(service_url or DEFAULT_SERVICE_URL)
+        session_url = urljoin(service_url, "interaction/sessions")
+        stream_url = urljoin(service_url, "interaction/runs/text-stream")
+    else:
+        if service_url:
+            settings_payload = {
+                "service_url": service_url,
+                "conversation_id": conversation_id,
+            }
+            settings_response = requests.post(
+                urljoin(app_url, "api/settings"),
+                json=settings_payload,
+                timeout=10,
+            )
+            settings_response.raise_for_status()
+        session_url = urljoin(app_url, "api/interaction/session")
+        stream_url = urljoin(app_url, "api/interaction/text-stream")
 
     session_response = requests.post(
-        urljoin(app_url, "api/interaction/session"),
+        session_url,
         json={
             "workflow": workflow,
             "conversation_id": conversation_id,
@@ -123,7 +158,7 @@ def run_probe(
     }
     started = time.perf_counter()
     response = requests.post(
-        urljoin(app_url, "api/interaction/text-stream"),
+        stream_url,
         json=payload,
         stream=True,
         timeout=(10, timeout),
@@ -153,6 +188,7 @@ def run_probe(
 
     total_elapsed_ms = (time.perf_counter() - started) * 1000.0
     saved_audio = _save_audio_payloads(audio_payloads, save_audio) if save_audio else None
+    audio_chunks = _audio_chunk_rows(events)
     return {
         "schema_version": 1,
         "label": label,
@@ -161,6 +197,7 @@ def run_probe(
         "config": {
             "app_url": app_url,
             "service_url": service_url,
+            "direct_service": direct_service,
             "conversation_id": conversation_id,
             "workflow": workflow,
             "interaction_session_id": interaction_session_id,
@@ -170,6 +207,7 @@ def run_probe(
             "save_audio": str(save_audio) if save_audio else None,
         },
         "summary": _summarize(events, total_elapsed_ms),
+        "audio_chunks": audio_chunks,
         "saved_audio": saved_audio,
         "events": events,
     }
@@ -178,7 +216,7 @@ def run_probe(
 def _iter_sse_events(response: requests.Response):
     event_name = "message"
     data_lines: list[str] = []
-    for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
+    for raw_line in response.iter_lines(chunk_size=8192, decode_unicode=True):
         if raw_line is None:
             continue
         line = raw_line.rstrip("\r")
@@ -213,6 +251,8 @@ def _audio_info(data: dict[str, Any]) -> dict[str, Any] | None:
         "duration_ms": len(audio_bytes) / (2.0 * sample_rate) * 1000.0,
         "chunk_index": _optional_int(data.get("chunk_index")),
         "segment_index": _optional_int(data.get("segment_index")),
+        "playback_key": _optional_string(data.get("playback_key")),
+        "run_id": _optional_string(data.get("run_id")),
     }
 
 
@@ -294,6 +334,54 @@ def _summarize(events: list[dict[str, Any]], total_elapsed_ms: float) -> dict[st
         "backlog_ms": _stats(backlog_ms),
         "final_backlog_ms": backlog_ms[-1] if backlog_ms else None,
     }
+
+
+def _audio_chunk_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    backlog_ms = 0.0
+    previous_arrival_ms: float | None = None
+    previous_duration_ms: float | None = None
+    for event_index, event in enumerate(events):
+        audio = event.get("audio")
+        if not isinstance(audio, dict):
+            continue
+        arrival_ms = float(event["elapsed_ms"])
+        duration_ms = float(audio["duration_ms"])
+        interarrival_ms = (
+            arrival_ms - previous_arrival_ms
+            if previous_arrival_ms is not None
+            else None
+        )
+        starvation_ms = (
+            max(0.0, interarrival_ms - previous_duration_ms)
+            if interarrival_ms is not None and previous_duration_ms is not None
+            else None
+        )
+        if interarrival_ms is not None:
+            backlog_ms = max(0.0, backlog_ms - interarrival_ms)
+        backlog_ms += duration_ms
+        rows.append(
+            {
+                "audio_arrival_index": len(rows),
+                "event_index": event_index,
+                "event": event.get("event"),
+                "elapsed_ms": arrival_ms,
+                "interarrival_ms": interarrival_ms,
+                "duration_ms": duration_ms,
+                "previous_duration_ms": previous_duration_ms,
+                "starvation_ms": starvation_ms,
+                "backlog_ms": backlog_ms,
+                "byte_count": audio.get("byte_count"),
+                "sample_rate": audio.get("sample_rate"),
+                "segment_index": audio.get("segment_index"),
+                "chunk_index": audio.get("chunk_index"),
+                "playback_key": audio.get("playback_key"),
+                "run_id": audio.get("run_id"),
+            }
+        )
+        previous_arrival_ms = arrival_ms
+        previous_duration_ms = duration_ms
+    return rows
 
 
 def _backlog_series(arrivals_ms: list[float], durations_ms: list[float]) -> list[float]:
@@ -401,6 +489,60 @@ def _optional_int(value: Any) -> int | None:
         return None
 
 
+def _optional_string(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _write_chunk_csv(rows: list[dict[str, Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "audio_arrival_index",
+        "event_index",
+        "event",
+        "elapsed_ms",
+        "interarrival_ms",
+        "duration_ms",
+        "previous_duration_ms",
+        "starvation_ms",
+        "backlog_ms",
+        "byte_count",
+        "sample_rate",
+        "segment_index",
+        "chunk_index",
+        "playback_key",
+        "run_id",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _format_chunk_table(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "No PCM audio chunks received."
+    header = (
+        f"{'#':>4} {'elapsed':>10} {'gap':>10} {'dur':>10} "
+        f"{'starve':>10} {'backlog':>10} {'seg':>5} {'chunk':>7} {'bytes':>8}"
+    )
+    lines = [header, "-" * len(header)]
+    for row in rows:
+        lines.append(
+            f"{row['audio_arrival_index']:>4} "
+            f"{_fmt_ms(row['elapsed_ms']):>10} "
+            f"{_fmt_ms(row['interarrival_ms']):>10} "
+            f"{_fmt_ms(row['duration_ms']):>10} "
+            f"{_fmt_ms(row['starvation_ms']):>10} "
+            f"{_fmt_ms(row['backlog_ms']):>10} "
+            f"{_fmt(row['segment_index']):>5} "
+            f"{_fmt(row['chunk_index']):>7} "
+            f"{_fmt(row['byte_count']):>8}"
+        )
+    return "\n".join(lines)
+
+
 def _get(data: dict[str, Any], *keys: str) -> Any:
     current: Any = data
     for key in keys:
@@ -423,6 +565,14 @@ def _fmt(value: Any) -> str:
         return "-"
     if isinstance(value, float):
         return f"{value:.4f}"
+    return str(value)
+
+
+def _fmt_ms(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, (int, float)):
+        return f"{float(value):.1f}"
     return str(value)
 
 

@@ -18,7 +18,7 @@ class SseEvent:
 def iter_sse_events(response: requests.Response) -> Iterable[SseEvent]:
     event = "message"
     data_lines: list[str] = []
-    for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
+    for raw_line in response.iter_lines(chunk_size=8192, decode_unicode=True):
         if raw_line is None:
             continue
         line = raw_line.rstrip("\r")
