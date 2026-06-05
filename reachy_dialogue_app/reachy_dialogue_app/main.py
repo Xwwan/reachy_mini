@@ -56,8 +56,13 @@ class ReachyDialogueApp(ReachyMiniApp):
         settings_lock = threading.Lock()
         settings = _default_settings()
         jobs: queue.Queue[RobotJob] = queue.Queue()
-        playback_scheduler = RobotAudioPlaybackScheduler(jobs)
+        action_jobs: queue.Queue[RobotJob] = queue.Queue()
+        playback_scheduler = RobotAudioPlaybackScheduler(
+            jobs,
+            action_jobs=action_jobs,
+        )
         failed_playback_keys: set[str] = set()
+        failed_action_playback_keys: set[str] = set()
         recorder = RobotMicRecorder(reachy_mini)
         playback_tester = RobotMicPlaybackTester(reachy_mini)
         behavior_config = _load_behavior_config()
@@ -117,17 +122,46 @@ class ReachyDialogueApp(ReachyMiniApp):
             behavior_config=behavior_config,
         )
 
-        while not stop_event.is_set():
-            try:
-                job = jobs.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            _process_robot_job(
-                reachy_mini,
-                job,
-                service_url=_snapshot(settings, settings_lock)["service_url"],
-                failed_playback_keys=failed_playback_keys,
-            )
+        service_url_getter = lambda: _snapshot(settings, settings_lock)["service_url"]
+        action_thread = threading.Thread(
+            target=_process_robot_job_queue,
+            args=(reachy_mini, action_jobs, stop_event),
+            kwargs={
+                "service_url_getter": service_url_getter,
+                "failed_playback_keys": failed_action_playback_keys,
+            },
+            daemon=True,
+        )
+        action_thread.start()
+
+        _process_robot_job_queue(
+            reachy_mini,
+            jobs,
+            stop_event,
+            service_url_getter=service_url_getter,
+            failed_playback_keys=failed_playback_keys,
+        )
+
+
+def _process_robot_job_queue(
+    reachy_mini: ReachyMini,
+    jobs: queue.Queue[RobotJob],
+    stop_event: threading.Event,
+    *,
+    service_url_getter: Callable[[], str],
+    failed_playback_keys: set[str],
+) -> None:
+    while not stop_event.is_set():
+        try:
+            job = jobs.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        _process_robot_job(
+            reachy_mini,
+            job,
+            service_url=service_url_getter(),
+            failed_playback_keys=failed_playback_keys,
+        )
 
 
 def _process_robot_job(

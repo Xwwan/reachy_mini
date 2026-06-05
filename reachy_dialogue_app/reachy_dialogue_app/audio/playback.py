@@ -59,8 +59,14 @@ class RobotAudioPlaybackGroup:
 class RobotAudioPlaybackScheduler:
     """Stream the current reply immediately while buffering later replies."""
 
-    def __init__(self, jobs: queue.Queue[RobotJob]) -> None:
+    def __init__(
+        self,
+        jobs: queue.Queue[RobotJob],
+        *,
+        action_jobs: queue.Queue[RobotJob] | None = None,
+    ) -> None:
         self.jobs = jobs
+        self.action_jobs = action_jobs or jobs
         self.lock = threading.Lock()
         self.groups: dict[str, RobotAudioPlaybackGroup] = {}
         self.order: list[str] = []
@@ -147,7 +153,7 @@ class RobotAudioPlaybackScheduler:
     ) -> None:
         if not action_signal:
             return
-        self.jobs.put(
+        self.action_jobs.put(
             RobotJob(
                 action_signal=action_signal,
                 action_config=action_config,

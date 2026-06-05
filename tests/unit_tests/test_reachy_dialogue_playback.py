@@ -130,9 +130,10 @@ def test_scheduler_emits_final_playback_done_job_when_metadata_is_reportable() -
     assert final_job.report_playback_done is True
 
 
-def test_scheduler_can_queue_action_before_final_playback_done_job() -> None:
+def test_scheduler_queues_action_separately_from_audio_playback_jobs() -> None:
     jobs: queue.Queue[RobotJob] = queue.Queue()
-    scheduler = RobotAudioPlaybackScheduler(jobs)
+    action_jobs: queue.Queue[RobotJob] = queue.Queue()
+    scheduler = RobotAudioPlaybackScheduler(jobs, action_jobs=action_jobs)
     metadata = PlaybackMetadata(playback_key="pb_1", run_id="irun_1")
     audio_base64 = base64.b64encode(b"\x00\x00").decode("ascii")
 
@@ -152,15 +153,17 @@ def test_scheduler_can_queue_action_before_final_playback_done_job() -> None:
     )
 
     audio_job = jobs.get_nowait()
-    action_job = jobs.get_nowait()
     final_job = jobs.get_nowait()
+    action_job = action_jobs.get_nowait()
 
     assert audio_job.audio_bytes == b"\x00\x00"
+    assert final_job.action_signal is None
+    assert final_job.report_playback_done is True
     assert action_job.action_signal == "happy"
     assert action_job.action_config == {"config_path": "action_call/config.json"}
     assert action_job.report_playback_done is False
-    assert final_job.action_signal is None
-    assert final_job.report_playback_done is True
+    assert jobs.empty()
+    assert action_jobs.empty()
 
 
 def test_report_robot_job_playback_result_calls_done_only_for_final_job() -> None:
