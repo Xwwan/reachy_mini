@@ -16,10 +16,10 @@ from ..audio.playback import (
     _playback_metadata_from_payload,
 )
 from ..behavior import (
+    BehaviorTriggerTracker,
     _behavior_result_payload,
     _first_ok_module_key,
     _module_config,
-    _trigger_behaviors_from_text,
 )
 from ..core.constants import DEFAULT_CONVERSATION_ID
 from ..core.http import _reply_text_from_payload, _sse_frame
@@ -55,6 +55,14 @@ def _register_interaction_routes(
         if playback_scheduler is not None
         else NullPlaybackSink()
     )
+
+    def submit_behavior_actions(behavior_results: list[Any]) -> None:
+        if not playback_sink.active:
+            return
+        playback_sink.submit_action(
+            action_signal=_first_ok_module_key(behavior_results, "action"),
+            action_config=_module_config(behavior_config, "action"),
+        )
 
     @app.post("/api/interaction/session")
     def create_interaction_session(
@@ -129,6 +137,7 @@ def _register_interaction_routes(
             )
 
         def event_stream():
+            behavior_tracker = BehaviorTriggerTracker(behavior_config)
             playback_key: str | None = None
             playback_completed = False
             fallback_playback_key = _new_playback_key("interaction-text")
@@ -170,12 +179,23 @@ def _register_interaction_routes(
                         yield _sse_frame(event, data)
                         continue
 
+                    if event == "delta":
+                        behavior_results = behavior_tracker.trigger_from_fragment(
+                            str(data.get("delta") or "")
+                        )
+                        submit_behavior_actions(behavior_results)
+                        for result in behavior_results:
+                            yield _sse_frame(
+                                "behavior",
+                                _behavior_result_payload(result),
+                            )
+                        yield _sse_frame(event, data)
+                        continue
+
                     if event == "done":
                         reply = _reply_text_from_payload(data)
-                        behavior_results = _trigger_behaviors_from_text(
-                            reply,
-                            behavior_config,
-                        )
+                        behavior_results = behavior_tracker.trigger_from_text(reply)
+                        submit_behavior_actions(behavior_results)
                         for result in behavior_results:
                             yield _sse_frame(
                                 "behavior",
@@ -190,14 +210,6 @@ def _register_interaction_routes(
                             playback_done = threading.Event()
                             playback_sink.complete(
                                 playback_key,
-                                action_signal=_first_ok_module_key(
-                                    behavior_results,
-                                    "action",
-                                ),
-                                action_config=_module_config(
-                                    behavior_config,
-                                    "action",
-                                ),
                                 done_event=playback_done,
                                 playback_metadata=metadata,
                             )
@@ -342,6 +354,7 @@ def _register_interaction_routes(
         live_session_id = _required_string(payload.live_session_id, "live_session_id")
 
         def event_stream():
+            behavior_tracker = BehaviorTriggerTracker(behavior_config)
             playback_key: str | None = None
             playback_completed = False
             fallback_playback_key = _new_playback_key("interaction-live")
@@ -383,12 +396,23 @@ def _register_interaction_routes(
                         yield _sse_frame(event, data)
                         continue
 
+                    if event == "delta":
+                        behavior_results = behavior_tracker.trigger_from_fragment(
+                            str(data.get("delta") or "")
+                        )
+                        submit_behavior_actions(behavior_results)
+                        for result in behavior_results:
+                            yield _sse_frame(
+                                "behavior",
+                                _behavior_result_payload(result),
+                            )
+                        yield _sse_frame(event, data)
+                        continue
+
                     if event == "done":
                         reply = _reply_text_from_payload(data)
-                        behavior_results = _trigger_behaviors_from_text(
-                            reply,
-                            behavior_config,
-                        )
+                        behavior_results = behavior_tracker.trigger_from_text(reply)
+                        submit_behavior_actions(behavior_results)
                         for result in behavior_results:
                             yield _sse_frame(
                                 "behavior",
@@ -403,14 +427,6 @@ def _register_interaction_routes(
                             playback_done = threading.Event()
                             playback_sink.complete(
                                 playback_key,
-                                action_signal=_first_ok_module_key(
-                                    behavior_results,
-                                    "action",
-                                ),
-                                action_config=_module_config(
-                                    behavior_config,
-                                    "action",
-                                ),
                                 done_event=playback_done,
                                 playback_metadata=metadata,
                             )

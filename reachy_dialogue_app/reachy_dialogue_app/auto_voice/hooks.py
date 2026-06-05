@@ -12,10 +12,10 @@ from ..audio.playback import (
     _playback_metadata_from_payload,
 )
 from ..behavior import (
+    BehaviorTriggerTracker,
     _behavior_result_payload,
     _first_ok_module_key,
     _module_config,
-    _trigger_behaviors_from_text,
 )
 from ..core.constants import OUTPUT_SAMPLE_RATE
 
@@ -38,6 +38,15 @@ def _auto_voice_stream_hook_factory(
 
     def factory(session_id: str):
         playback_key = _new_playback_key(f"auto-voice-{session_id}")
+        behavior_tracker = BehaviorTriggerTracker(behavior_config)
+
+        def submit_behavior_actions(behavior_results: list[Any]) -> None:
+            if not playback_sink.active:
+                return
+            playback_sink.submit_action(
+                action_signal=_first_ok_module_key(behavior_results, "action"),
+                action_config=_module_config(behavior_config, "action"),
+            )
 
         def hook(
             event: str,
@@ -67,13 +76,22 @@ def _auto_voice_stream_hook_factory(
                     )
                 return extras, None
 
+            if event == "delta":
+                behavior_results = behavior_tracker.trigger_from_fragment(
+                    str(data.get("delta") or "")
+                )
+                submit_behavior_actions(behavior_results)
+                for result in behavior_results:
+                    extras.append(("behavior", _behavior_result_payload(result)))
+                return extras, None
+
             if event != "done":
                 return extras, None
 
-            behavior_results = _trigger_behaviors_from_text(
-                str(data.get("reply") or ""),
-                behavior_config,
+            behavior_results = behavior_tracker.trigger_from_text(
+                str(data.get("reply") or "")
             )
+            submit_behavior_actions(behavior_results)
             for result in behavior_results:
                 extras.append(("behavior", _behavior_result_payload(result)))
 
@@ -102,8 +120,6 @@ def _auto_voice_stream_hook_factory(
             done_event = threading.Event()
             playback_sink.complete(
                 key,
-                action_signal=_first_ok_module_key(behavior_results, "action"),
-                action_config=_module_config(behavior_config, "action"),
                 done_event=done_event,
                 playback_metadata=playback_metadata,
             )

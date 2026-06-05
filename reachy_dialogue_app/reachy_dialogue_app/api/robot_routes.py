@@ -15,10 +15,10 @@ from ..audio.playback import (
 )
 from ..audio.robot_mic import LiveTranscript, RobotMicPlaybackTester, RobotMicRecorder
 from ..behavior import (
+    BehaviorTriggerTracker,
     _behavior_result_payload,
     _first_ok_module_key,
     _module_config,
-    _trigger_behaviors_from_text,
 )
 from ..core.http import _daemon_volume_request, _sse_frame
 from ..core.settings import _snapshot
@@ -41,6 +41,12 @@ def _register_robot_routes(
     playback_scheduler: RobotAudioPlaybackScheduler,
     behavior_config: dict[str, Any],
 ) -> None:
+    def submit_behavior_actions(behavior_results: list[Any]) -> None:
+        playback_scheduler.submit_action(
+            action_signal=_first_ok_module_key(behavior_results, "action"),
+            action_config=_module_config(behavior_config, "action"),
+        )
+
     @app.get("/api/app-mode")
     def app_mode() -> dict[str, Any]:
         return {"web_only": False}
@@ -121,6 +127,7 @@ def _register_robot_routes(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         def event_stream():
+            behavior_tracker = BehaviorTriggerTracker(behavior_config)
             audio_sample_rate = int(current["tts_sample_rate"])
             fallback_playback_key = _new_playback_key("robot-mic-interaction")
             playback_key: str | None = None
@@ -169,6 +176,19 @@ def _register_robot_routes(
                         yield _sse_frame(event, data)
                         continue
 
+                    if event == "delta":
+                        behavior_results = behavior_tracker.trigger_from_fragment(
+                            str(data.get("delta") or "")
+                        )
+                        submit_behavior_actions(behavior_results)
+                        for result in behavior_results:
+                            yield _sse_frame(
+                                "behavior",
+                                _behavior_result_payload(result),
+                            )
+                        yield _sse_frame(event, data)
+                        continue
+
                     if event == "done":
                         recorder.final_response = dict(data)
                         recorder.live_transcript = LiveTranscript(
@@ -176,10 +196,10 @@ def _register_robot_routes(
                             is_final=True,
                             error=None,
                         )
-                        behavior_results = _trigger_behaviors_from_text(
-                            str(data.get("reply") or ""),
-                            behavior_config,
+                        behavior_results = behavior_tracker.trigger_from_text(
+                            str(data.get("reply") or "")
                         )
+                        submit_behavior_actions(behavior_results)
                         for result in behavior_results:
                             yield _sse_frame(
                                 "behavior",
@@ -194,14 +214,6 @@ def _register_robot_routes(
                             playback_done = threading.Event()
                             playback_scheduler.complete(
                                 playback_key,
-                                action_signal=_first_ok_module_key(
-                                    behavior_results,
-                                    "action",
-                                ),
-                                action_config=_module_config(
-                                    behavior_config,
-                                    "action",
-                                ),
                                 done_event=playback_done,
                                 playback_metadata=metadata,
                             )

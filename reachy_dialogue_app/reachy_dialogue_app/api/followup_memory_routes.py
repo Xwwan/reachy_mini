@@ -44,6 +44,14 @@ def _register_followup_memory_routes(
         else NullPlaybackSink()
     )
 
+    def submit_behavior_actions(behavior_results: list[Any]) -> None:
+        if not playback_sink.active:
+            return
+        playback_sink.submit_action(
+            action_signal=_first_ok_module_key(behavior_results, "action"),
+            action_config=_module_config(behavior_config, "action"),
+        )
+
     @app.get("/api/followups/pending")
     def list_pending_followups() -> dict[str, Any]:
         current = _snapshot(settings, settings_lock)
@@ -63,6 +71,7 @@ def _register_followup_memory_routes(
 
         reply = _reply_text_from_payload(data)
         behavior_results = _trigger_behaviors_from_text(reply, behavior_config)
+        submit_behavior_actions(behavior_results)
         if behavior_results:
             data = dict(data)
             data["behavior_results"] = [
@@ -79,7 +88,6 @@ def _register_followup_memory_routes(
         conversation_id = _required_string(conversation_id, "conversation_id")
 
         def event_stream():
-            behavior_results_by_key: dict[str, list[Any]] = {}
             try:
                 client = client_factory(current["service_url"])
                 for item in client.followup_stream(
@@ -89,15 +97,11 @@ def _register_followup_memory_routes(
                     event = item.event
                     data = item.data
                     if event == "followup":
-                        playback_key = _playback_metadata_from_payload(
-                            data,
-                            _new_playback_key("followup"),
-                        ).playback_key
                         behavior_results = _trigger_behaviors_from_text(
                             _reply_text_from_payload(data),
                             behavior_config,
                         )
-                        behavior_results_by_key[playback_key] = behavior_results
+                        submit_behavior_actions(behavior_results)
                         yield _sse_frame(event, data)
                         for result in behavior_results:
                             yield _sse_frame(
@@ -141,21 +145,9 @@ def _register_followup_memory_routes(
                             _new_playback_key("followup"),
                         )
                         if playback_sink.active:
-                            behavior_results = behavior_results_by_key.pop(
-                                metadata.playback_key,
-                                [],
-                            )
                             playback_done = threading.Event()
                             playback_sink.complete(
                                 metadata.playback_key,
-                                action_signal=_first_ok_module_key(
-                                    behavior_results,
-                                    "action",
-                                ),
-                                action_config=_module_config(
-                                    behavior_config,
-                                    "action",
-                                ),
                                 done_event=playback_done,
                                 playback_metadata=metadata,
                             )

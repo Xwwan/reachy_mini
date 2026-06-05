@@ -6,10 +6,17 @@ import numpy as np
 import pytest
 
 from reachy_dialogue_app.reachy_dialogue_app.auto_voice import manager as manager_module
+from reachy_dialogue_app.reachy_dialogue_app.auto_voice.hooks import (
+    _auto_voice_stream_hook_factory,
+)
 from reachy_dialogue_app.reachy_dialogue_app.auto_voice import session as session_module
 from reachy_dialogue_app.reachy_dialogue_app.auto_voice.config import AutoVoiceConfig
 from reachy_dialogue_app.reachy_dialogue_app.auto_voice.session import AutoVoiceSession
 from reachy_dialogue_app.reachy_dialogue_app.auto_voice.types import WakeGateConfig
+from reachy_dialogue_app.reachy_dialogue_app.audio.playback import (
+    RobotAudioPlaybackScheduler,
+    RobotJob,
+)
 from reachy_dialogue_app.reachy_dialogue_app.vad import VadConfig
 from reachy_dialogue_app.reachy_dialogue_app.interaction.sse import SseEvent
 
@@ -226,6 +233,65 @@ def test_auto_voice_finish_stream_uses_interaction_events() -> None:
     assert ("audio", barriers[0][1]) in emitted
     assert ("done", barriers[1][1]) in emitted
     assert any(event == "playback_done" for event, _ in emitted)
+
+
+def test_auto_voice_hook_triggers_split_action_tag_before_done() -> None:
+    jobs: queue.Queue[RobotJob] = queue.Queue()
+    scheduler = RobotAudioPlaybackScheduler(jobs)
+    behavior_config = {
+        "enabled": True,
+        "modules": {
+            "action": {
+                "enabled": True,
+                "tag_names": ["act"],
+                "trigger_mode": "function",
+                "triggers": "*",
+            }
+        },
+    }
+    hook = _auto_voice_stream_hook_factory(scheduler, behavior_config)("session_1")
+
+    extras, barrier = hook("delta", {"delta": "准备动作 [act:ha"})
+    assert extras == []
+    assert barrier is None
+    assert jobs.empty()
+
+    extras, barrier = hook("delta", {"delta": "ppy]"})
+    action_job = jobs.get_nowait()
+
+    assert barrier is None
+    assert extras == [
+        (
+            "behavior",
+            {
+                "matched": True,
+                "module": "action",
+                "tag": "act",
+                "key": "happy",
+                "url": None,
+                "triggered": True,
+                "ok": True,
+                "status_code": None,
+                "error": None,
+            },
+        )
+    ]
+    assert action_job.action_signal == "happy"
+
+    extras, barrier = hook(
+        "done",
+        {
+            "reply": "准备动作 [act:happy]",
+            "run_id": "irun_auto",
+            "playback_key": "pb_auto",
+        },
+    )
+    final_job = jobs.get_nowait()
+
+    assert extras == []
+    assert barrier is not None
+    assert final_job.action_signal is None
+    assert final_job.report_playback_done is True
 
 
 def test_auto_voice_playback_wait_subtracts_streamed_audio_time(monkeypatch) -> None:

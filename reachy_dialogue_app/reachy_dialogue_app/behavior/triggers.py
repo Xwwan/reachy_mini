@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Any
 from urllib.parse import quote
 
@@ -9,6 +10,36 @@ import requests
 from .models import BehaviorTag, BehaviorTriggerResult
 
 TAG_PATTERN = re.compile(r"\[([^:\]\r\n]+):([^\]\r\n]+)\]")
+
+
+class BehaviorTriggerTracker:
+    """Trigger behavior tags once while a streamed reply is being assembled."""
+
+    def __init__(self, config: dict[str, Any] | None) -> None:
+        self.config = config
+        self.buffer = ""
+        self.triggered_tag_counts: Counter[tuple[str, str, str]] = Counter()
+
+    def trigger_from_fragment(self, fragment: str) -> list[BehaviorTriggerResult]:
+        if fragment:
+            self.buffer += fragment
+        return self.trigger_from_text(self.buffer)
+
+    def trigger_from_text(self, text: str) -> list[BehaviorTriggerResult]:
+        if not self.config or not self.config.get("enabled", True):
+            return []
+
+        seen_in_text: Counter[tuple[str, str, str]] = Counter()
+        results: list[BehaviorTriggerResult] = []
+        for tag in _extract_behavior_tags(text, self.config):
+            tag_key = (tag.module, tag.tag_name.casefold(), tag.key)
+            occurrence_index = seen_in_text[tag_key]
+            seen_in_text[tag_key] += 1
+            if occurrence_index < self.triggered_tag_counts[tag_key]:
+                continue
+            results.append(_trigger_behavior_tag(tag, self.config))
+            self.triggered_tag_counts[tag_key] += 1
+        return results
 
 
 def _trigger_behaviors_from_text(

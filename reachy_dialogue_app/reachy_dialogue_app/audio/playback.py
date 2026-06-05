@@ -139,6 +139,21 @@ class RobotAudioPlaybackScheduler:
             playback_metadata=playback_metadata,
         )
 
+    def submit_action(
+        self,
+        *,
+        action_signal: str | None,
+        action_config: dict[str, Any] | None = None,
+    ) -> None:
+        if not action_signal:
+            return
+        self.jobs.put(
+            RobotJob(
+                action_signal=action_signal,
+                action_config=action_config,
+            )
+        )
+
     def abort(self, key: str | None) -> None:
         if not key:
             return
@@ -260,6 +275,14 @@ class PlaybackSink(Protocol):
     def abort(self, key: str | None) -> None:
         ...
 
+    def submit_action(
+        self,
+        *,
+        action_signal: str | None,
+        action_config: dict[str, Any] | None = None,
+    ) -> None:
+        ...
+
 
 @dataclass(frozen=True)
 class RobotPlaybackSink:
@@ -306,6 +329,17 @@ class RobotPlaybackSink:
     def abort(self, key: str | None) -> None:
         self.scheduler.abort(key)
 
+    def submit_action(
+        self,
+        *,
+        action_signal: str | None,
+        action_config: dict[str, Any] | None = None,
+    ) -> None:
+        self.scheduler.submit_action(
+            action_signal=action_signal,
+            action_config=action_config,
+        )
+
 
 @dataclass(frozen=True)
 class NullPlaybackSink:
@@ -346,6 +380,14 @@ class NullPlaybackSink:
         )
 
     def abort(self, key: str | None) -> None:
+        return None
+
+    def submit_action(
+        self,
+        *,
+        action_signal: str | None,
+        action_config: dict[str, Any] | None = None,
+    ) -> None:
         return None
 
 

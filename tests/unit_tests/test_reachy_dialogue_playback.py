@@ -130,6 +130,39 @@ def test_scheduler_emits_final_playback_done_job_when_metadata_is_reportable() -
     assert final_job.report_playback_done is True
 
 
+def test_scheduler_can_queue_action_before_final_playback_done_job() -> None:
+    jobs: queue.Queue[RobotJob] = queue.Queue()
+    scheduler = RobotAudioPlaybackScheduler(jobs)
+    metadata = PlaybackMetadata(playback_key="pb_1", run_id="irun_1")
+    audio_base64 = base64.b64encode(b"\x00\x00").decode("ascii")
+
+    scheduler.enqueue_audio(
+        "pb_1",
+        audio_base64=audio_base64,
+        sample_rate=24000,
+        playback_metadata=metadata,
+    )
+    scheduler.submit_action(
+        action_signal="happy",
+        action_config={"config_path": "action_call/config.json"},
+    )
+    scheduler.complete(
+        "pb_1",
+        playback_metadata=metadata,
+    )
+
+    audio_job = jobs.get_nowait()
+    action_job = jobs.get_nowait()
+    final_job = jobs.get_nowait()
+
+    assert audio_job.audio_bytes == b"\x00\x00"
+    assert action_job.action_signal == "happy"
+    assert action_job.action_config == {"config_path": "action_call/config.json"}
+    assert action_job.report_playback_done is False
+    assert final_job.action_signal is None
+    assert final_job.report_playback_done is True
+
+
 def test_report_robot_job_playback_result_calls_done_only_for_final_job() -> None:
     client = FakeInteractionClient()
     metadata = PlaybackMetadata(playback_key="pb_1", run_id="irun_1")

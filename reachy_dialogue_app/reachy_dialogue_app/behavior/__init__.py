@@ -7,6 +7,7 @@ from .config import (
 )
 from .models import BehaviorTag, BehaviorTriggerResult
 from .triggers import (
+    BehaviorTriggerTracker,
     _behavior_result_payload,
     _disable_behavior_module,
     _emoji_result_payload,
@@ -20,6 +21,7 @@ from .triggers import (
 
 __all__ = [
     "BehaviorTag",
+    "BehaviorTriggerTracker",
     "BehaviorTriggerResult",
     "_behavior_result_payload",
     "_default_behavior_config",
