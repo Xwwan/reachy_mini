@@ -4,6 +4,9 @@ import base64
 import queue
 import threading
 
+import numpy as np
+
+from reachy_dialogue_app.reachy_dialogue_app.audio import robot_output
 from reachy_dialogue_app.reachy_dialogue_app.audio.playback import (
     PlaybackMetadata,
     RobotAudioPlaybackScheduler,
@@ -42,6 +45,27 @@ class FakeInteractionClient:
         }
         self.error_calls.append(payload)
         return {"ok": "true", **payload}
+
+
+class FakeRobotMedia:
+    def __init__(self, output_sample_rate: int = 24000) -> None:
+        self.output_sample_rate = output_sample_rate
+        self.start_playing_calls = 0
+        self.pushed_samples: list[np.ndarray] = []
+
+    def start_playing(self) -> None:
+        self.start_playing_calls += 1
+
+    def get_output_audio_samplerate(self) -> int:
+        return self.output_sample_rate
+
+    def push_audio_sample(self, samples: np.ndarray) -> None:
+        self.pushed_samples.append(samples.copy())
+
+
+class FakeReachyMini:
+    def __init__(self, media: FakeRobotMedia | None = None) -> None:
+        self.media = media or FakeRobotMedia()
 
 
 def test_payload_playback_key_prefers_backend_playback_key() -> None:
@@ -154,6 +178,89 @@ def test_report_robot_job_playback_result_calls_error_for_failed_chunk() -> None
             "error": "speaker unavailable",
         }
     ]
+
+
+def test_handle_robot_job_pushes_pcm_chunk_without_waiting(monkeypatch) -> None:
+    media = FakeRobotMedia(output_sample_rate=24000)
+    reachy_mini = FakeReachyMini(media)
+    metadata = PlaybackMetadata(playback_key="pb_1", run_id="irun_1")
+    sleeps: list[float] = []
+    audio_bytes = np.array([0, 32767, -32768], dtype="<i2").tobytes()
+
+    monkeypatch.setattr(
+        robot_output.time,
+        "sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+
+    result = robot_output._handle_robot_job(
+        reachy_mini,  # type: ignore[arg-type]
+        RobotJob(
+            audio_bytes=audio_bytes,
+            audio_sample_rate=24000,
+            playback_metadata=metadata,
+        ),
+    )
+
+    assert result.ok
+    assert sleeps == []
+    assert media.start_playing_calls == 1
+    assert len(media.pushed_samples) == 1
+    np.testing.assert_allclose(
+        media.pushed_samples[0],
+        np.array([0.0, 32767 / 32768, -1.0], dtype=np.float32),
+    )
+
+
+def test_handle_robot_job_resamples_to_robot_output_rate() -> None:
+    media = FakeRobotMedia(output_sample_rate=16000)
+    reachy_mini = FakeReachyMini(media)
+    audio_bytes = np.zeros(240, dtype="<i2").tobytes()
+
+    result = robot_output._handle_robot_job(
+        reachy_mini,  # type: ignore[arg-type]
+        RobotJob(audio_bytes=audio_bytes, audio_sample_rate=24000),
+    )
+
+    assert result.ok
+    assert len(media.pushed_samples) == 1
+    assert media.pushed_samples[0].shape == (160,)
+
+
+def test_final_robot_job_waits_for_streamed_audio_before_done(monkeypatch) -> None:
+    media = FakeRobotMedia(output_sample_rate=24000)
+    reachy_mini = FakeReachyMini(media)
+    metadata = PlaybackMetadata(playback_key="pb_1", run_id="irun_1")
+    sleeps: list[float] = []
+    monotonic_values = iter([10.0, 10.25])
+
+    monkeypatch.setattr(
+        robot_output.time,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+    monkeypatch.setattr(
+        robot_output.time,
+        "sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+
+    audio_result = robot_output._handle_robot_job(
+        reachy_mini,  # type: ignore[arg-type]
+        RobotJob(
+            audio_bytes=np.zeros(24000, dtype="<i2").tobytes(),
+            audio_sample_rate=24000,
+            playback_metadata=metadata,
+        ),
+    )
+    final_result = robot_output._handle_robot_job(
+        reachy_mini,  # type: ignore[arg-type]
+        RobotJob(playback_metadata=metadata, report_playback_done=True),
+    )
+
+    assert audio_result.ok
+    assert final_result.ok
+    assert sleeps == [0.75]
 
 
 def test_process_robot_job_reports_done_and_sets_event(monkeypatch) -> None:
