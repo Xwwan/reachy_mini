@@ -43,9 +43,15 @@ const state = {
     autoAudioContext: null,
     autoSourceNode: null,
     autoProcessorNode: null,
+    autoMonitorNode: null,
     autoPendingBytes: new Uint8Array(0),
     autoSendQueue: [],
     autoSendLoopRunning: false,
+    autoInputOpen: false,
+    autoChunkCount: 0,
+    autoAcceptedChunkCount: 0,
+    autoDroppedChunkCount: 0,
+    autoLatestBackendVad: 0,
     playbackSink: {
         async ensureReady() {},
         unlockFromGesture() {},
@@ -243,6 +249,7 @@ async function sendText() {
 }
 
 async function startLocalLive() {
+    assertBrowserMicAvailable();
     await ensureSession("local");
     const startPayload = await interactionLiveStart("local");
     state.activeLiveMode = "local";
@@ -354,8 +361,11 @@ async function finishLive() {
 
 async function startAutoVoice(mode) {
     if (state.autoVoiceSessionId) return;
-    await ensurePlaybackContext();
     const normalizedMode = mode === "robot" ? "robot" : "local";
+    if (normalizedMode === "local") {
+        assertBrowserMicAvailable();
+    }
+    await ensurePlaybackContext();
     await saveSettings();
     const response = await fetch("/api/auto-voice/start", {
         method: "POST",
@@ -374,9 +384,11 @@ async function startAutoVoice(mode) {
     state.autoVoiceSessionId = payload.session_id;
     state.autoVoiceMode = normalizedMode;
     state.autoVoiceGateState = payload.gate_state || "";
+    resetAutoVoiceAudioDiagnostics();
     resetAutoVoiceTurn();
     appendEvent("auto_voice_start", payload);
     setAutoVoiceUi(true, payload.state || "listening");
+    updateAutoVoiceInputOpen(payload.state || "listening");
     connectAutoVoiceEvents(payload.session_id);
     if (normalizedMode === "local") {
         await startAutoLocalCapture();
@@ -396,10 +408,13 @@ function connectAutoVoiceEvents(sessionId) {
         "snapshot",
         "state",
         "gate_state",
+        "level",
         "utterance",
         "speech_start",
         "speech_end",
         "speech_cancelled",
+        "input_dropped",
+        "input_drained",
         "transcript",
         "meta",
         "delta",
@@ -432,7 +447,10 @@ function closeAutoVoiceEvents() {
 
 function handleAutoVoiceEvent(event, data) {
     appendEvent(`auto:${event}`, data);
-    if (data.state) setAutoVoiceUi(Boolean(state.autoVoiceSessionId), data.state);
+    if (data.state) {
+        setAutoVoiceUi(Boolean(state.autoVoiceSessionId), data.state);
+        updateAutoVoiceInputOpen(data.state);
+    }
     if (data.gate_state) {
         state.autoVoiceGateState = data.gate_state;
         els.autoVoiceStatus.textContent = autoVoiceGateText(data.gate_state);
@@ -441,15 +459,32 @@ function handleAutoVoiceEvent(event, data) {
         beginAutoVoiceTurn(data);
     }
     if (event === "speech_start") {
+        state.autoInputOpen = true;
         beginAutoVoiceTurn(data);
         els.liveTranscript.textContent = "检测到语音";
     }
     if (event === "speech_end") {
+        state.autoInputOpen = false;
+        clearAutoPendingAudio();
         els.liveTranscript.textContent = "语音结束，正在识别";
     }
     if (event === "speech_cancelled") {
+        state.autoInputOpen = true;
         resetAutoVoiceTurn();
         els.liveTranscript.textContent = "语音太短";
+    }
+    if (event === "level") {
+        handleAutoVoiceLevel(data);
+    }
+    if (event === "input_dropped") {
+        state.autoDroppedChunkCount = Math.max(
+            Number(data.dropped_input_chunks || 0),
+            state.autoDroppedChunkCount + 1,
+        );
+        updateAutoVoiceChunkStatus();
+    }
+    if (event === "input_drained") {
+        clearAutoPendingAudio();
     }
     if (event === "wake_detected") {
         els.autoVoiceStatus.textContent = data.reply || "已唤醒，请继续说";
@@ -567,6 +602,19 @@ function parseEventSourcePayload(raw) {
     }
 }
 
+function assertBrowserMicAvailable() {
+    const canUseMic = Boolean(
+        navigator.mediaDevices
+        && typeof navigator.mediaDevices.getUserMedia === "function"
+    );
+    if (!canUseMic) {
+        throw new Error("当前浏览器不支持麦克风输入，或页面不是 localhost/HTTPS 安全上下文。请用 http://127.0.0.1:8043/ 打开。");
+    }
+    if (window.isSecureContext === false) {
+        throw new Error("浏览器麦克风需要 HTTPS 或 localhost。请用 http://127.0.0.1:8043/，不要用 0.0.0.0 或普通局域网 IP。");
+    }
+}
+
 async function startAutoLocalCapture() {
     state.autoStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -576,14 +624,25 @@ async function startAutoLocalCapture() {
         },
     });
     state.autoAudioContext = new AudioContext();
+    if (state.autoAudioContext.state === "suspended") {
+        await state.autoAudioContext.resume();
+    }
     state.autoSourceNode = state.autoAudioContext.createMediaStreamSource(state.autoStream);
     state.autoProcessorNode = state.autoAudioContext.createScriptProcessor(4096, 1, 1);
+    state.autoMonitorNode = state.autoAudioContext.createGain();
+    state.autoMonitorNode.gain.value = 0;
     state.autoProcessorNode.onaudioprocess = (event) => {
+        if (!state.autoVoiceSessionId || state.autoVoiceMode !== "local") return;
         const input = event.inputBuffer.getChannelData(0);
+        if (!state.autoInputOpen) {
+            state.autoPendingBytes = new Uint8Array(0);
+            return;
+        }
         enqueueAutoPcm(downsampleToPcm16(input, state.autoAudioContext.sampleRate, TARGET_SAMPLE_RATE));
     };
     state.autoSourceNode.connect(state.autoProcessorNode);
-    state.autoProcessorNode.connect(state.autoAudioContext.destination);
+    state.autoProcessorNode.connect(state.autoMonitorNode);
+    state.autoMonitorNode.connect(state.autoAudioContext.destination);
     startAutoSendLoop();
 }
 
@@ -613,7 +672,8 @@ async function autoSendLoop() {
             await sleep(25);
             continue;
         }
-        await fetch("/api/auto-voice/chunk", {
+        if (!state.autoVoiceSessionId) continue;
+        const response = await fetch("/api/auto-voice/chunk", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -622,6 +682,19 @@ async function autoSendLoop() {
                 sample_rate: TARGET_SAMPLE_RATE,
             }),
         });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.error) {
+            appendEvent("auto:chunk_error", payload);
+            throw new Error(payload.detail || payload.error?.message || "自动语音音频发送失败");
+        }
+        state.autoChunkCount += 1;
+        if (payload.accepted === false) {
+            state.autoDroppedChunkCount += 1;
+            updateAutoVoiceInputOpen(payload.state);
+        } else {
+            state.autoAcceptedChunkCount += 1;
+        }
+        updateAutoVoiceChunkStatus();
     }
 }
 
@@ -632,6 +705,7 @@ async function stopAutoVoice() {
     state.autoVoiceSessionId = "";
     state.autoVoiceMode = "";
     state.autoVoiceGateState = "";
+    resetAutoVoiceAudioDiagnostics();
     resetAutoVoiceTurn();
     setAutoVoiceUi(false, "idle");
     if (!sessionId) return;
@@ -646,6 +720,7 @@ async function stopAutoVoice() {
 
 async function stopAutoLocalCapture() {
     if (state.autoProcessorNode) state.autoProcessorNode.disconnect();
+    if (state.autoMonitorNode) state.autoMonitorNode.disconnect();
     if (state.autoSourceNode) state.autoSourceNode.disconnect();
     if (state.autoStream) {
         for (const track of state.autoStream.getTracks()) track.stop();
@@ -655,9 +730,50 @@ async function stopAutoLocalCapture() {
     state.autoSourceNode = null;
     state.autoStream = null;
     state.autoAudioContext = null;
+    state.autoMonitorNode = null;
     state.autoSendLoopRunning = false;
+    state.autoInputOpen = false;
+    clearAutoPendingAudio();
+}
+
+function updateAutoVoiceInputOpen(sessionState) {
+    const inputOpen = ["starting", "listening", "user_speaking"].includes(sessionState);
+    state.autoInputOpen = inputOpen;
+    if (!inputOpen) clearAutoPendingAudio();
+}
+
+function clearAutoPendingAudio() {
     state.autoSendQueue = [];
     state.autoPendingBytes = new Uint8Array(0);
+}
+
+function resetAutoVoiceAudioDiagnostics() {
+    state.autoInputOpen = false;
+    state.autoChunkCount = 0;
+    state.autoAcceptedChunkCount = 0;
+    state.autoDroppedChunkCount = 0;
+    state.autoLatestBackendVad = 0;
+    clearAutoPendingAudio();
+}
+
+function handleAutoVoiceLevel(data) {
+    const probability = Number(data.speech_probability || 0);
+    const rms = Number(data.rms || 0);
+    const peak = Number(data.peak || 0);
+    state.autoLatestBackendVad = probability;
+    if (state.autoVoiceSessionId && state.autoInputOpen) {
+        els.autoVoiceStatus.textContent = `vad ${probability.toFixed(3)} rms ${rms.toFixed(5)}`;
+    }
+    if (rms > 0 || peak > 0) {
+        els.liveTranscript.textContent = `麦克风 rms ${rms.toFixed(5)} peak ${peak.toFixed(5)}`;
+    }
+}
+
+function updateAutoVoiceChunkStatus() {
+    const text = `chunks ${state.autoAcceptedChunkCount}/${state.autoChunkCount}`;
+    if (state.autoDroppedChunkCount > 0) {
+        els.autoVoiceStatus.textContent = `${text}, dropped ${state.autoDroppedChunkCount}`;
+    }
 }
 
 function setAutoVoiceUi(active, label) {
