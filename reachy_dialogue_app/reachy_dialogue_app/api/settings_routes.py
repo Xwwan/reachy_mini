@@ -7,12 +7,12 @@ from typing import Any
 from urllib.parse import urljoin
 
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from ..behavior import _public_behavior_config, _public_emoji_config
 from ..core.http import _normalize_service_url
 from ..core.settings import _snapshot
-from .payloads import SettingsPayload
+from .payloads import DemoProfilePayload, SettingsPayload
 
 
 def _register_settings_routes(
@@ -61,6 +61,32 @@ def _register_settings_routes(
             }
 
 
+    @app.get("/api/demo-profile")
+    def get_demo_profile() -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        try:
+            response = requests.get(
+                urljoin(current["service_url"], "/demo/profile"),
+                timeout=5,
+            )
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return _json_or_demo_error(response)
+
+    @app.post("/api/demo-profile")
+    def update_demo_profile(payload: DemoProfilePayload) -> dict[str, Any]:
+        current = _snapshot(settings, settings_lock)
+        try:
+            response = requests.post(
+                urljoin(current["service_url"], "/demo/profile"),
+                json={"profile": payload.profile},
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return _json_or_demo_error(response)
+
+
     if behavior_config is not None:
         @app.get("/api/emoji-config")
         def get_emoji_config() -> dict[str, Any]:
@@ -69,3 +95,20 @@ def _register_settings_routes(
         @app.get("/api/behavior-config")
         def get_behavior_config() -> dict[str, Any]:
             return _public_behavior_config(behavior_config)
+
+
+def _json_or_demo_error(response: requests.Response) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"demo profile response was not JSON: {response.text[:200]}",
+        ) from exc
+    if response.ok:
+        return payload
+    detail = payload.get("detail") or payload.get("message")
+    error = payload.get("error")
+    if detail is None and isinstance(error, dict):
+        detail = error.get("message")
+    raise HTTPException(status_code=response.status_code, detail=detail or payload)

@@ -54,6 +54,19 @@
             </label>
         </section>
 
+        <section class="demo-band" aria-label="演示用户切换">
+            <div class="demo-copy">
+                <span>演示用户</span>
+                <strong id="demo-profile-label">未选择</strong>
+                <small id="demo-voice-label">音色未知</small>
+            </div>
+            <div class="demo-actions" role="group" aria-label="切换演示用户">
+                <button class="demo-profile-btn secondary-action" type="button" data-profile="jxl">季羡林</button>
+                <button class="demo-profile-btn secondary-action" type="button" data-profile="normal">普通</button>
+                <button class="demo-profile-btn secondary-action" type="button" data-profile="sts">史铁生</button>
+            </div>
+        </section>
+
         <div class="workspace">
             <section class="dialogue-surface" aria-label="对话">
                 <div class="surface-header">
@@ -187,7 +200,7 @@
         <div id="status-line" role="status">准备就绪</div>
     </main>
 
-    <script src="/static/main.js?v=auto-voice-input-3"></script>
+    <script src="/static/main.js?v=demo-profile-switch-1"></script>
 </body>
 
 </html>

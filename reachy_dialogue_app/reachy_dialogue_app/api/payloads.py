@@ -17,6 +17,10 @@ class SettingsPayload(BaseModel):
     tts_sample_rate: int | None = None
 
 
+class DemoProfilePayload(BaseModel):
+    profile: str
+
+
 class InteractionSessionPayload(BaseModel):
     workflow: str = "chat"
     conversation_id: str | None = None

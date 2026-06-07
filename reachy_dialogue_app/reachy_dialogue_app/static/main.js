@@ -7,6 +7,8 @@ const state = {
         conversation_id: "reachy-mini-voice",
     },
     appMode: { web_only: false },
+    demoProfile: null,
+    demoSwitching: false,
     interactionSessionId: "",
     workflow: "chat",
     activeRunId: "",
@@ -79,6 +81,9 @@ const els = {
     ttsEnabled: document.getElementById("tts-enabled"),
     healthBtn: document.getElementById("health-btn"),
     newSessionBtn: document.getElementById("new-session-btn"),
+    demoProfileLabel: document.getElementById("demo-profile-label"),
+    demoVoiceLabel: document.getElementById("demo-voice-label"),
+    demoProfileBtns: Array.from(document.querySelectorAll(".demo-profile-btn")),
     sessionTitle: document.getElementById("session-title"),
     workflowPill: document.getElementById("workflow-pill"),
     timeline: document.getElementById("timeline"),
@@ -184,6 +189,94 @@ async function checkHealth() {
     } else {
         els.connectionStatus.textContent = "服务不可用";
         setStatus(payload.error || "服务不可用");
+    }
+}
+
+async function loadDemoProfile() {
+    const response = await fetch("/api/demo-profile");
+    const payload = await response.json();
+    if (!response.ok) {
+        throw new Error(payload.detail || "读取演示用户失败");
+    }
+    state.demoProfile = payload;
+    renderDemoProfile();
+    return payload;
+}
+
+async function switchDemoProfile(profile) {
+    if (!profile || state.demoSwitching) {
+        return;
+    }
+    state.demoSwitching = true;
+    renderDemoProfile();
+    try {
+        await saveSettings();
+        const response = await fetch("/api/demo-profile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ profile }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.detail || "切换演示用户失败");
+        }
+        state.demoProfile = payload;
+        resetConversationStateForDemoSwitch();
+        appendEvent("demo_profile", payload);
+        renderDemoProfile();
+        renderTimeline();
+        renderRuns();
+        renderFollowups();
+        renderOnboarding();
+        renderStatus();
+        setStatus(`已切换到 ${demoProfileName(payload.profile)}`);
+    } finally {
+        state.demoSwitching = false;
+        renderDemoProfile();
+    }
+}
+
+function resetConversationStateForDemoSwitch() {
+    state.interactionSessionId = "";
+    state.activeRunId = "";
+    state.activePlaybackKey = "";
+    state.activeLiveSessionId = "";
+    state.activeLiveMode = "";
+    state.runStatusText = "idle";
+    state.sessionSnapshot = null;
+    state.runHistory = [];
+    state.runDetail = null;
+    state.messages = [];
+    state.followupPending = [];
+    state.onboarding = {
+        onboarding_session_id: "",
+        stage: null,
+        stage_key: "",
+        stage_name: "",
+        status: "idle",
+        onboarding_complete: false,
+        collected: {},
+        missing_required_slots: [],
+    };
+}
+
+function demoProfileName(profile) {
+    const names = { jxl: "季羡林", normal: "普通", sts: "史铁生" };
+    return names[profile] || profile || "未选择";
+}
+
+function renderDemoProfile() {
+    if (!els.demoProfileLabel || !els.demoVoiceLabel) {
+        return;
+    }
+    const profile = state.demoProfile?.profile || "";
+    const voice = state.demoProfile?.voice || state.demoProfile?.audio?.tts?.voice || "未知";
+    els.demoProfileLabel.textContent = state.demoSwitching ? "切换中..." : demoProfileName(profile);
+    els.demoVoiceLabel.textContent = `音色 ${voice}`;
+    for (const button of els.demoProfileBtns || []) {
+        const active = button.dataset.profile === profile;
+        button.classList.toggle("active", active);
+        button.disabled = state.demoSwitching;
     }
 }
 
@@ -1573,6 +1666,9 @@ function wireEvents() {
     document.addEventListener("pointerdown", unlockPlaybackFromGesture, { passive: true });
     els.healthBtn.addEventListener("click", () => checkHealth().catch((error) => setStatus(error.message)));
     els.newSessionBtn.addEventListener("click", () => createInteractionSession("text").catch((error) => setStatus(error.message)));
+    for (const button of els.demoProfileBtns || []) {
+        button.addEventListener("click", () => switchDemoProfile(button.dataset.profile || "").catch((error) => setStatus(error.message)));
+    }
     els.sendTextBtn.addEventListener("click", () => {
         unlockPlaybackFromGesture();
         sendText().catch((error) => setStatus(error.message));
@@ -1616,6 +1712,7 @@ async function initialize() {
     renderFollowups();
     renderOnboarding();
     await loadSettings();
+    await loadDemoProfile().catch((error) => setStatus(error.message));
     startDefaultFollowupStream();
     await checkHealth().catch(() => {});
 }
@@ -1625,6 +1722,7 @@ window.__reachyDialogue = {
     els,
     initialize,
     createInteractionSession,
+    switchDemoProfile,
     sendText,
     startRobotLive,
     finishLive,
