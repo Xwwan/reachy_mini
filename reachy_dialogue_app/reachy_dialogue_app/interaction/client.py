@@ -1,3 +1,10 @@
+"""Interaction API 的同步 HTTP 客户端。
+
+Reachy Dialogue App 自身只负责机器人 IO 和本地 UI；LLM、ASR/TTS、记忆和
+workflow 都由外部 Interaction 服务提供。本客户端把这些 HTTP/SSE 接口包装成
+后端路由和自动语音状态机可以直接调用的方法。
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -14,6 +21,8 @@ from .types import AudioFormat, InputMode, JsonDict, Workflow
 
 @dataclass
 class InteractionApiError(RuntimeError):
+    """Interaction 服务返回错误时抛出的结构化异常。"""
+
     message: str
     status_code: int | None = None
     payload: JsonDict | None = None
@@ -25,6 +34,8 @@ class InteractionApiError(RuntimeError):
 
 
 class InteractionApiClient:
+    """对 Interaction 服务的薄封装，保留 requests.Session 以复用连接。"""
+
     def __init__(
         self,
         service_url: str = DEFAULT_SERVICE_URL,
@@ -115,6 +126,8 @@ class InteractionApiClient:
         message: str,
         tts_enabled: bool,
     ) -> Iterable[SseEvent]:
+        """发送文本消息并返回流式回复事件。"""
+
         response = self.session.post(
             self._url("/interaction/runs/text-stream"),
             json={
@@ -137,6 +150,8 @@ class InteractionApiClient:
         channels: int = 1,
         audio_format: AudioFormat = "pcm",
     ) -> JsonDict:
+        """创建实时语音输入会话，后续 chunk/transcript/finish 都使用其 id。"""
+
         response = self.session.post(
             self._url("/interaction/live/start"),
             json={
@@ -216,6 +231,8 @@ class InteractionApiClient:
         live_session_id: str,
         tts_enabled: bool,
     ) -> Iterable[SseEvent]:
+        """结束实时语音输入，并以 SSE 形式获取最终回复。"""
+
         response = self.session.post(
             self._url("/interaction/live/finish-stream"),
             json={
@@ -333,6 +350,8 @@ class InteractionApiClient:
         return json_or_error(response)
 
     def _iter_response_events(self, response: requests.Response) -> Iterable[SseEvent]:
+        """统一处理 SSE HTTP 错误和事件解析。"""
+
         try:
             raise_for_error(response)
             yield from iter_sse_events(response)
@@ -344,11 +363,15 @@ class InteractionApiClient:
 
 
 def normalize_service_url(value: str) -> str:
+    """保证服务地址有协议和结尾斜杠，便于 urljoin。"""
+
     value = value.strip() or DEFAULT_SERVICE_URL
     return value.rstrip("/") + "/"
 
 
 def json_or_error(response: requests.Response) -> JsonDict:
+    """解析 JSON 响应；非 2xx 时转成 InteractionApiError。"""
+
     try:
         data: Any = response.json()
     except ValueError:

@@ -1,3 +1,6 @@
+// 自动语音/VAD 调试页逻辑。
+// 这个页面用于单独观察自动语音 session、VAD level、chunk 接收/丢弃和音频播放，
+// 比主页面更偏诊断，不承担完整对话 UI。
 let audioContext = null;
 let playbackContext = null;
 let mediaStream = null;
@@ -25,6 +28,7 @@ let latestBackendVad = 0;
 const TARGET_SAMPLE_RATE = 16000;
 const CHUNK_BYTES = 5120;
 
+// 页面节点引用集中放置，便于调试时快速找到某个指标的渲染位置。
 const els = {
     serviceUrl: document.getElementById("service-url"),
     conversationId: document.getElementById("conversation-id"),
@@ -53,6 +57,7 @@ const els = {
 };
 
 async function loadSettings() {
+    // 同时读取 app 设置、自动语音配置和行为配置，方便对照运行时参数。
     const [settingsResponse, configResponse, behaviorResponse, modeResponse] = await Promise.all([
         fetch("/api/settings"),
         fetch("/api/auto-voice/config"),
@@ -104,6 +109,7 @@ async function checkHealth() {
 }
 
 async function startTest() {
+    // 启动一个自动语音 session；local 模式还会打开浏览器麦克风并开始发送 chunk。
     if (isRunning) return;
     await saveSettings();
     resetCounters();
@@ -143,6 +149,7 @@ async function startTest() {
 }
 
 function connectEvents() {
+    // 诊断页订阅更细的自动语音事件，用来观察 VAD、输入门控和播放阶段。
     if (eventSource) eventSource.close();
     eventSource = new EventSource(
         `/api/auto-voice/events?session_id=${encodeURIComponent(sessionId)}`,
@@ -178,6 +185,7 @@ function connectEvents() {
 }
 
 async function startLocalMic() {
+    // 本地麦克风采样后降采样到 16k PCM16，再按 CHUNK_BYTES 送给后端。
     mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
             echoCancellation: true,
@@ -204,6 +212,7 @@ async function startLocalMic() {
 }
 
 async function sendLoop() {
+    // 串行发送音频 chunk，记录 accepted/dropped 数量用于定位输入门控问题。
     while (isRunning || sendQueue.length > 0) {
         const chunk = sendQueue.shift();
         if (!chunk) {
@@ -243,6 +252,7 @@ function enqueuePcm(bytes) {
 }
 
 function handleAutoEvent(eventName, data) {
+    // 自动语音事件统一入口，所有 UI 计数器和转写/回复展示都从这里更新。
     logEvent(eventName, data);
     if (eventName === "snapshot") {
         els.state.textContent = data.state || els.state.textContent;
@@ -337,6 +347,7 @@ function handleAutoEvent(eventName, data) {
 }
 
 async function stopTest() {
+    // 停止时按“前端采集 -> SSE -> 后端 session”的顺序释放资源。
     const currentSession = sessionId;
     isRunning = false;
     if (eventSource) {
@@ -430,6 +441,7 @@ function updateTimer() {
 }
 
 function updateLocalMicMeter(samples) {
+    // 本地 RMS/peak 只反映浏览器麦克风输入，后端 VAD level 由 level 事件显示。
     let sum = 0;
     let peak = 0;
     for (const sample of samples) {
@@ -453,6 +465,7 @@ function parseEventPayload(raw) {
 }
 
 async function ensurePlaybackContext() {
+    // 浏览器播放 TTS 音频需要先在用户手势中解锁 AudioContext。
     if (!playbackContext || playbackContext.state === "closed") {
         playbackContext = new AudioContext();
         playbackNextTime = playbackContext.currentTime;
@@ -463,6 +476,7 @@ async function ensurePlaybackContext() {
 }
 
 function playPcmChunk(bytes, sampleRate) {
+    // Interaction 返回的是 PCM16/base64，这里解码后直接排进浏览器 AudioContext。
     if (!bytes.length || !playbackContext) return;
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const sampleCount = Math.floor(bytes.length / 2);

@@ -1,3 +1,9 @@
+"""自动语音模块使用的 SSE 解析工具。
+
+Interaction 服务的流式接口也是 Server-Sent Events；这里提供解析、JSON 解码
+和音频时长估算，供自动语音状态机判断播放等待时间。
+"""
+
 from __future__ import annotations
 
 import base64
@@ -8,6 +14,8 @@ import requests
 
 
 def audio_duration_from_payload(data: dict[str, Any]) -> float:
+    """从音频事件 payload 中估算音频秒数。"""
+
     audio_base64 = data.get("audio_base64")
     if not isinstance(audio_base64, str) or not audio_base64:
         return 0.0
@@ -20,6 +28,8 @@ def audio_duration_from_payload(data: dict[str, Any]) -> float:
 
 
 def iter_sse_events(response: requests.Response):
+    """逐行解析 requests 流响应中的 SSE 事件。"""
+
     if not response.ok:
         json_or_error(response)
     event = "message"

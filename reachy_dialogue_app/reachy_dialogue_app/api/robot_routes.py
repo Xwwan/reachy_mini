@@ -1,3 +1,9 @@
+"""真实机器人相关 API 路由。
+
+这些接口只在 on-robot/laptop app 模式注册；web-only 模式没有 reachy_mini
+实例，因此只能使用浏览器麦克风和浏览器播放。
+"""
+
 from __future__ import annotations
 
 import threading
@@ -41,6 +47,8 @@ def _register_robot_routes(
     playback_scheduler: RobotAudioPlaybackScheduler,
     behavior_config: dict[str, Any],
 ) -> None:
+    """注册机器人音量、机器人麦克风、回放测试等接口。"""
+
     def submit_behavior_actions(behavior_results: list[Any]) -> None:
         playback_scheduler.submit_action(
             action_signal=_first_ok_module_key(behavior_results, "action"),
@@ -88,6 +96,8 @@ def _register_robot_routes(
     def start_robot_mic_interaction(
         payload: RobotMicInteractionStartPayload,
     ) -> dict[str, Any]:
+        """开始机器人麦克风实时语音交互。"""
+
         current = _snapshot(settings, settings_lock)
         if playback_tester.get_level().is_recording:
             raise HTTPException(

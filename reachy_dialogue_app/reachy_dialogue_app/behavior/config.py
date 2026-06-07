@@ -1,3 +1,9 @@
+"""行为与自动语音配置加载。
+
+默认配置内置在代码中，用户可以通过 behavior_config.yaml/JSON 覆盖；同时保留
+旧版 emoji_config.json 的兼容路径，方便历史配置继续工作。
+"""
+
 from __future__ import annotations
 
 import json
@@ -19,6 +25,8 @@ except ImportError:  # pragma: no cover - dependency is declared in pyproject.
 
 
 def _default_behavior_config() -> dict[str, Any]:
+    """返回完整默认配置，确保缺少配置文件时 app 仍可启动。"""
+
     return {
         "enabled": True,
         "auto_voice": {
@@ -85,6 +93,8 @@ def _default_behavior_config() -> dict[str, Any]:
 
 
 def _load_behavior_config() -> dict[str, Any]:
+    """加载、合并并规范化行为配置。"""
+
     config = _default_behavior_config()
     config_path = _resolve_behavior_config_path()
     try:
@@ -143,6 +153,8 @@ def _load_structured_config(config_path: Path) -> dict[str, Any]:
 
 
 def _merge_behavior_config(config: dict[str, Any], loaded: dict[str, Any]) -> None:
+    """合并新版 modules 配置或旧版 emoji_config。"""
+
     if "modules" in loaded and isinstance(loaded.get("modules"), dict):
         if "enabled" in loaded:
             config["enabled"] = loaded["enabled"]
@@ -182,6 +194,8 @@ def _deep_update(current: dict[str, Any], updates: dict[str, Any]) -> None:
 
 
 def _normalize_behavior_config(config: dict[str, Any], *, base_dir: Path) -> None:
+    """把模块配置统一成运行时代码更容易消费的形态。"""
+
     _normalize_auto_voice_config(config, base_dir=base_dir)
     modules = config.get("modules")
     if not isinstance(modules, dict):
@@ -222,6 +236,8 @@ def _normalize_behavior_config(config: dict[str, Any], *, base_dir: Path) -> Non
 
 
 def _normalize_auto_voice_config(config: dict[str, Any], *, base_dir: Path) -> None:
+    """规范化 auto_voice 子配置，包括模型路径和数值参数。"""
+
     auto_voice = config.get("auto_voice")
     if not isinstance(auto_voice, dict):
         auto_voice = {}

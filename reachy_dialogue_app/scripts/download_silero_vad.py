@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download the default Silero VAD ONNX model used by auto voice mode."""
+"""下载并校验自动语音使用的默认 Silero VAD ONNX 模型。"""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "models" / "silero_vad.on
 
 
 def sha256_file(path: Path) -> str:
+    """计算文件 SHA256，用于确认模型下载完整。"""
+
     digest = hashlib.sha256()
     with path.open("rb") as file:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
@@ -28,6 +30,8 @@ def sha256_file(path: Path) -> str:
 
 
 def main() -> None:
+    """脚本入口：如果模型不存在或校验失败就重新下载。"""
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)

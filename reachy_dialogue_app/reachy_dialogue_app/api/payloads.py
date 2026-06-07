@@ -1,3 +1,9 @@
+"""FastAPI 请求体模型。
+
+路由层使用这些 Pydantic model 做基础字段校验，复杂规则仍放在各路由的
+validate/helper 函数里处理。
+"""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

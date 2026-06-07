@@ -1,3 +1,5 @@
+"""Interaction 服务客户端共享类型。"""
+
 from __future__ import annotations
 
 from typing import Any, Literal, TypeAlias

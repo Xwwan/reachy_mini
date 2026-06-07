@@ -1,3 +1,5 @@
+"""VAD 使用的音频转换工具。"""
+
 from __future__ import annotations
 
 import base64
@@ -8,6 +10,8 @@ from .constants import SILERO_SAMPLE_RATE
 
 
 def audio_rms_peak(samples: np.ndarray) -> tuple[float, float]:
+    """计算一段 float 音频的 RMS 和峰值。"""
+
     values = np.asarray(samples, dtype=np.float32).reshape(-1)
     if values.size == 0:
         return 0.0, 0.0
@@ -17,6 +21,8 @@ def audio_rms_peak(samples: np.ndarray) -> tuple[float, float]:
 
 
 def normalize_audio_sample(sample: np.ndarray, source_rate: int, target_rate: int = SILERO_SAMPLE_RATE) -> np.ndarray:
+    """把任意输入音频转成单声道、目标采样率、float32。"""
+
     values = np.asarray(sample, dtype=np.float32)
     if values.ndim == 2:
         values = values.mean(axis=1)
@@ -27,6 +33,8 @@ def normalize_audio_sample(sample: np.ndarray, source_rate: int, target_rate: in
 
 
 def resample_linear(samples: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    """使用线性插值做轻量级重采样，避免为 VAD 引入额外实时依赖。"""
+
     values = np.asarray(samples, dtype=np.float32).reshape(-1)
     if values.size == 0 or source_rate == target_rate:
         return values.astype(np.float32, copy=False)

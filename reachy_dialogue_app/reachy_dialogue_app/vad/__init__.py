@@ -1,3 +1,5 @@
+"""VAD 子包公共导出。"""
+
 from .audio import (
     audio_rms_peak,
     float_to_pcm16_base64,

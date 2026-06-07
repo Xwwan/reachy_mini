@@ -1,3 +1,6 @@
+// Reachy Dialogue App 前端主逻辑。
+// 页面通过本地 FastAPI 路由访问 Interaction 服务和机器人能力；所有运行时状态
+// 集中放在 state，方便不同面板在同一轮对话中共享 session/run/live 信息。
 const state = {
     settings: {
         service_url: "",
@@ -39,6 +42,7 @@ const state = {
     autoVoiceUserMessage: null,
     autoVoiceAssistantMessage: null,
     autoVoiceEventSource: null,
+    // 自动语音 local 模式的浏览器麦克风 WebAudio 节点与发送诊断。
     autoStream: null,
     autoAudioContext: null,
     autoSourceNode: null,
@@ -67,6 +71,7 @@ const state = {
 const TARGET_SAMPLE_RATE = 16000;
 const LIVE_CHUNK_BYTES = 5120;
 
+// DOM 引用集中管理，后续渲染函数只通过 els 读写页面，避免到处查询节点。
 const els = {
     serviceUrl: document.getElementById("service-url"),
     conversationId: document.getElementById("conversation-id"),
@@ -132,6 +137,7 @@ function normalizeWorkflow() {
 }
 
 async function loadSettings() {
+    // app-mode 决定当前是否有真实机器人：web-only 模式只能使用浏览器播放和本地麦克风。
     const [settingsResponse, modeResponse] = await Promise.all([
         fetch("/api/settings"),
         fetch("/api/app-mode"),
@@ -182,6 +188,8 @@ async function checkHealth() {
 }
 
 async function createInteractionSession(inputMode = "text") {
+    // 所有文本、实时语音、自动语音请求都需要先有 Interaction session；
+    // session 保存 conversation/workflow 上下文。
     await saveSettings();
     const workflow = normalizeWorkflow();
     const response = await fetch("/api/interaction/session", {
@@ -217,6 +225,7 @@ async function ensureSession(inputMode = "text") {
 }
 
 async function sendText() {
+    // 文本发送走 SSE，边收 delta/audio/done 边更新时间线和播放状态。
     const message = els.messageInput.value.trim();
     if (!message) {
         setStatus("请输入内容");
@@ -249,6 +258,7 @@ async function sendText() {
 }
 
 async function startLocalLive() {
+    // 本地实时语音使用浏览器麦克风；浏览器必须处于安全上下文才能 getUserMedia。
     assertBrowserMicAvailable();
     await ensureSession("local");
     const startPayload = await interactionLiveStart("local");
@@ -278,6 +288,7 @@ async function startLocalLive() {
 }
 
 async function startRobotLive() {
+    // 机器人实时语音由后端直接读取 Reachy media，不需要浏览器麦克风权限。
     await ensureSession("robot");
     const response = await fetch("/api/robot-mic/start-interaction", {
         method: "POST",
@@ -299,6 +310,7 @@ async function startRobotLive() {
 }
 
 async function interactionLiveStart(inputMode) {
+    // live/start 在 Interaction 服务侧创建临时音频流 session。
     const response = await fetch("/api/interaction/live/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -320,6 +332,7 @@ async function interactionLiveStart(inputMode) {
 }
 
 async function finishLive() {
+    // finish 会结束 live 音频输入，并通过 SSE 接收最终转写和回复。
     if (!state.activeLiveMode) return;
     await ensurePlaybackContext();
     setStatus("正在结束语音");
@@ -360,6 +373,7 @@ async function finishLive() {
 }
 
 async function startAutoVoice(mode) {
+    // 自动语音是“持续监听 + VAD 自动分段”的模式；本函数只负责前端启动和输入源选择。
     if (state.autoVoiceSessionId) return;
     const normalizedMode = mode === "robot" ? "robot" : "local";
     if (normalizedMode === "local") {
@@ -396,6 +410,7 @@ async function startAutoVoice(mode) {
 }
 
 function connectAutoVoiceEvents(sessionId) {
+    // 自动语音后端通过 SSE 推送状态、VAD level、转写、LLM 回复和播放完成事件。
     closeAutoVoiceEvents();
     if (typeof EventSource !== "function") return;
     const params = new URLSearchParams({ session_id: sessionId });
@@ -446,6 +461,7 @@ function closeAutoVoiceEvents() {
 }
 
 function handleAutoVoiceEvent(event, data) {
+    // 这里是自动语音前端状态机入口：每个后端事件都会同步 UI 状态和时间线消息。
     appendEvent(`auto:${event}`, data);
     if (data.state) {
         setAutoVoiceUi(Boolean(state.autoVoiceSessionId), data.state);
@@ -529,6 +545,7 @@ function handleAutoVoiceEvent(event, data) {
 }
 
 function beginAutoVoiceTurn(data = {}) {
+    // 一次 utterance 对应用户说的一句话，先创建用户/助手占位消息，后续 transcript/delta 填充。
     const utteranceId = data.utterance_id || "";
     if (utteranceId && utteranceId === state.autoVoiceUtteranceId) return;
     state.autoVoiceUtteranceId = utteranceId || state.autoVoiceUtteranceId || `auto_${Date.now()}`;
@@ -603,6 +620,7 @@ function parseEventSourcePayload(raw) {
 }
 
 function assertBrowserMicAvailable() {
+    // getUserMedia 只在 HTTPS、localhost 或 127.0.0.1 等安全上下文可用。
     const canUseMic = Boolean(
         navigator.mediaDevices
         && typeof navigator.mediaDevices.getUserMedia === "function"
@@ -616,6 +634,8 @@ function assertBrowserMicAvailable() {
 }
 
 async function startAutoLocalCapture() {
+    // ScriptProcessor 仍可满足当前低频 PCM chunk 发送需求；monitor gain 设为 0，
+    // 让节点保持连接但不把麦克风声音回放到扬声器。
     state.autoStream = await navigator.mediaDevices.getUserMedia({
         audio: {
             echoCancellation: true,
@@ -647,6 +667,7 @@ async function startAutoLocalCapture() {
 }
 
 function enqueueAutoPcm(chunk) {
+    // 后端按 16k PCM16 处理 VAD；这里先按固定字节数聚合，减少 HTTP 请求数量。
     if (!chunk.length || !state.autoVoiceSessionId) return;
     const merged = new Uint8Array(state.autoPendingBytes.length + chunk.length);
     merged.set(state.autoPendingBytes, 0);
@@ -666,6 +687,7 @@ function startAutoSendLoop() {
 }
 
 async function autoSendLoop() {
+    // 发送循环和录音回调解耦：录音只入队，网络请求在这里串行发送。
     while (state.autoSendLoopRunning || state.autoSendQueue.length > 0) {
         const chunk = state.autoSendQueue.shift();
         if (!chunk) {
@@ -699,6 +721,7 @@ async function autoSendLoop() {
 }
 
 async function stopAutoVoice() {
+    // 先关闭前端输入和 SSE，再通知后端 stop；即使后端已经结束也保持 UI 可恢复。
     const sessionId = state.autoVoiceSessionId;
     closeAutoVoiceEvents();
     await stopAutoLocalCapture();
@@ -737,6 +760,7 @@ async function stopAutoLocalCapture() {
 }
 
 function updateAutoVoiceInputOpen(sessionState) {
+    // 后端说话、转写和冷却时关闭输入，避免机器人自己的声音被重新送回 VAD。
     const inputOpen = ["starting", "listening", "user_speaking"].includes(sessionState);
     state.autoInputOpen = inputOpen;
     if (!inputOpen) clearAutoPendingAudio();
@@ -787,6 +811,7 @@ function setAutoVoiceUi(active, label) {
 }
 
 async function refreshFollowups() {
+    // follow-up 是对话服务产生的待处理任务，前端只负责展示和触发执行。
     const response = await fetch("/api/followups/pending");
     const payload = await response.json();
     if (!response.ok) {
@@ -898,6 +923,7 @@ async function runPendingFollowups() {
 }
 
 function toggleFollowupStream() {
+    // follow-up stream 与普通文本流一样会产生 delta/audio/done，因此复用流事件处理。
     if (state.followupEventSource) {
         closeFollowupStream();
         return;
@@ -987,6 +1013,7 @@ async function refreshProfile() {
 }
 
 async function stopLocalCapture() {
+    // 停止按住说话式的本地 live 输入，并释放浏览器麦克风。
     if (state.processorNode) state.processorNode.disconnect();
     if (state.sourceNode) state.sourceNode.disconnect();
     if (state.localStream) {
@@ -1001,6 +1028,7 @@ async function stopLocalCapture() {
 }
 
 async function abortLive() {
+    // abort 用于用户取消尚未 finish 的 live session。
     if (state.activeLiveMode === "local" && state.activeLiveSessionId) {
         await fetch("/api/interaction/live/abort", {
             method: "POST",
@@ -1040,6 +1068,7 @@ function startSendLoop() {
 }
 
 async function sendLoop() {
+    // 普通 live 语音的发送循环，和自动语音类似，也是串行发送固定大小 chunk。
     while (state.sendLoopRunning || state.sendQueue.length > 0) {
         const chunk = state.sendQueue.shift();
         if (!chunk) {
@@ -1100,6 +1129,7 @@ async function updateLiveTranscript() {
 }
 
 async function consumeSseResponse(response, context = {}) {
+    // fetch 读取 SSE 时浏览器不会自动分发事件，这里手动按空行切 frame。
     if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.detail || "stream request failed");
@@ -1143,6 +1173,7 @@ function parseSseFrame(rawFrame) {
 }
 
 function handleStreamEvent(event, data, context = {}) {
+    // 普通文本/live/follow-up 的统一流事件入口。
     appendEvent(event, data);
     if (data.interaction_session_id) state.interactionSessionId = data.interaction_session_id;
     if (data.workflow) state.workflow = data.workflow;
@@ -1395,6 +1426,7 @@ function clearEvents() {
 }
 
 function playbackKeyFromPayload(payload) {
+    // 尽量和后端使用相同规则推导 playback_key，便于 UI 展示当前播放关联的 run。
     const explicit = payloadString(payload, "playback_key");
     if (explicit) return explicit;
     const requestId = payloadString(payload, "request_id")
@@ -1457,6 +1489,7 @@ function base64ToBytes(value) {
 }
 
 async function ensurePlaybackContext() {
+    // Safari/Chrome 都要求音频播放在用户手势之后解锁。
     await state.playbackSink.ensureReady();
 }
 
@@ -1469,12 +1502,14 @@ async function playBrowserPcmChunk(data) {
 }
 
 class NullPlaybackSink {
+    // 真实机器人模式由后端播放音频，前端不需要本地播放。
     async ensureReady() {}
     unlockFromGesture() {}
     async handleAudio() {}
 }
 
 class BrowserPlaybackSink {
+    // web-only 模式没有机器人扬声器，直接在浏览器播放 Interaction 返回的 PCM。
     constructor() {
         this.context = null;
         this.nextTime = 0;
@@ -1534,6 +1569,7 @@ function sleep(ms) {
 }
 
 function wireEvents() {
+    // 所有按钮事件集中绑定，初始化完成后页面即进入可操作状态。
     document.addEventListener("pointerdown", unlockPlaybackFromGesture, { passive: true });
     els.healthBtn.addEventListener("click", () => checkHealth().catch((error) => setStatus(error.message)));
     els.newSessionBtn.addEventListener("click", () => createInteractionSession("text").catch((error) => setStatus(error.message)));

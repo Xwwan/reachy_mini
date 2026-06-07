@@ -1,3 +1,5 @@
+"""Reachy Dialogue App 的共享常量。"""
+
 from pathlib import Path
 
 

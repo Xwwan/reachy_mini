@@ -1,3 +1,9 @@
+"""自动语音 FastAPI 路由。
+
+这一层只负责 HTTP 参数校验、session id 分发和 SSE 转发；真正的 VAD/转写/
+对话状态机在 AutoVoiceSession 内部。
+"""
+
 from __future__ import annotations
 
 import threading
@@ -22,6 +28,8 @@ def _register_auto_voice_routes(
     *,
     allow_robot: bool,
 ) -> None:
+    """注册自动语音配置、启动、音频 chunk、事件和停止接口。"""
+
     @app.get("/api/auto-voice/config")
     def auto_voice_config() -> dict[str, Any]:
         return {
@@ -41,6 +49,8 @@ def _register_auto_voice_routes(
 
     @app.post("/api/auto-voice/start")
     def auto_voice_start(payload: AutoVoiceStartPayload) -> dict[str, Any]:
+        """创建自动语音 session，并把启动快照返回给前端。"""
+
         if payload.input_mode not in {"local", "robot"}:
             raise HTTPException(
                 status_code=422,
@@ -84,6 +94,8 @@ def _register_auto_voice_routes(
 
     @app.post("/api/auto-voice/chunk")
     def auto_voice_chunk(payload: AutoVoiceChunkPayload) -> dict[str, Any]:
+        """接收浏览器麦克风音频 chunk。"""
+
         try:
             session = manager.get(payload.session_id)
             accepted = session.submit_pcm16_base64(

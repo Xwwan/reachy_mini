@@ -1,3 +1,9 @@
+"""基于 VAD 帧的用户语音分段器。
+
+Silero 只给出短 chunk 的语音概率；Segmenter 在其上叠加 pre-roll、最短语音、
+最短静音、最大句长等策略，输出 speech_start/end/cancelled 事件。
+"""
+
 from __future__ import annotations
 
 import time
@@ -11,6 +17,8 @@ from .silero import SileroVad
 
 
 class UtteranceSegmenter:
+    """把连续音频流切成一段段可发送给对话服务的用户话语。"""
+
     def __init__(self, vad: SileroVad, config: VadConfig):
         self.vad = vad
         self.config = config
@@ -30,6 +38,8 @@ class UtteranceSegmenter:
         self.last_peak = 0.0
 
     def feed(self, samples: np.ndarray) -> list[VadEvent]:
+        """喂入任意长度音频，内部按 SILERO_CHUNK_SIZE 累积处理。"""
+
         incoming = np.asarray(samples, dtype=np.float32).reshape(-1)
         if incoming.size == 0:
             return []
@@ -44,6 +54,8 @@ class UtteranceSegmenter:
         return events
 
     def _feed_chunk(self, chunk: np.ndarray) -> VadEvent | None:
+        """处理一个 VAD chunk，并在状态变化时返回事件。"""
+
         frame = self.vad.predict_chunk(chunk)
         is_speech = (
             frame.speech_probability >= self.config.speech_threshold
@@ -93,6 +105,8 @@ class UtteranceSegmenter:
         return None
 
     def _finish(self, frame: VadFrame, *, forced: bool) -> VadEvent:
+        """结束当前话语；过短则取消，足够长则输出 speech_end。"""
+
         audio = np.concatenate(self.current) if self.current else np.zeros(0, dtype=np.float32)
         duration = audio.shape[0] / float(self.config.sample_rate)
         min_speech_samples = int(self.config.min_speech_ms * self.config.sample_rate / 1000)

@@ -1,3 +1,10 @@
+"""Reachy Dialogue App 主入口。
+
+这个文件负责两种运行方式：
+- 真实机器人 app：由 ReachyMiniApp.run 拿到 reachy_mini 实例后注册完整 API。
+- web-only：没有机器人硬件，只启动静态页面和浏览器麦克风/播放相关接口。
+"""
+
 import argparse
 import os
 import queue
@@ -47,12 +54,18 @@ from .interaction import InteractionApiClient
 
 
 class ReachyDialogueApp(ReachyMiniApp):
+    """Reachy Mini 平台加载的应用类。"""
+
     custom_app_url: str | None = "http://0.0.0.0:8042"
     request_media_backend: str | None = None
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event):
+        """真实机器人模式入口，注册 API 并启动机器人播放队列消费者。"""
+
         assert self.settings_app is not None
 
+        # settings 是 UI 当前选择的服务地址、会话 id 等运行时状态；多个路由会读写，
+        # 所以使用 lock 提供很轻量的线程安全保护。
         settings_lock = threading.Lock()
         settings = _default_settings()
         jobs: queue.Queue[RobotJob] = queue.Queue()
@@ -73,6 +86,7 @@ class ReachyDialogueApp(ReachyMiniApp):
                 "service_url"
             ],
             robot_audio_source=lambda: (
+                # robot 自动语音模式直接轮询 Reachy media 的输入采样，不走浏览器。
                 reachy_mini.media.get_audio_sample(),
                 reachy_mini.media.get_input_audio_samplerate(),
             ),
@@ -151,6 +165,8 @@ def _process_robot_job_queue(
     service_url_getter: Callable[[], str],
     failed_playback_keys: set[str],
 ) -> None:
+    """持续消费机器人 job 队列，直到 app 停止。"""
+
     while not stop_event.is_set():
         try:
             job = jobs.get(timeout=0.1)
@@ -172,6 +188,8 @@ def _process_robot_job(
     failed_playback_keys: set[str],
     client_factory: Callable[[str], InteractionApiClient] = InteractionApiClient,
 ) -> None:
+    """执行单个机器人 job，并在需要时向 Interaction 服务上报播放结果。"""
+
     try:
         result = _handle_robot_job(reachy_mini, job)
         metadata = job.playback_metadata
@@ -213,6 +231,12 @@ def _process_robot_job(
 
 
 def _build_web_only_app() -> FastAPI:
+    """构建无机器人硬件的 FastAPI app。
+
+    web-only 模式用于在电脑上调前端、浏览器麦克风和外部 Interaction 服务；
+    行为动作模块会被关闭，因为没有 reachy_mini 对象可执行动作。
+    """
+
     app = FastAPI()
     settings_lock = threading.Lock()
     settings = _default_settings()
@@ -271,12 +295,16 @@ def _build_web_only_app() -> FastAPI:
 
 
 def run_web_only(host: str, port: int) -> None:
+    """启动 web-only uvicorn 服务。"""
+
     import uvicorn
 
     uvicorn.run(_build_web_only_app(), host=host, port=port)
 
 
 def parse_args() -> argparse.Namespace:
+    """解析命令行参数。"""
+
     parser = argparse.ArgumentParser(description="Run the Reachy voice dialogue app.")
     parser.add_argument(
         "--robot-host",
@@ -334,6 +362,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """命令行入口，根据参数选择 web-only、mockup 或真实 app 运行方式。"""
+
     args = parse_args()
     if args.web_only:
         run_web_only(args.web_host, args.web_port)
@@ -375,6 +405,8 @@ def main() -> None:
 
 
 def _spawn_mockup_daemon() -> None:
+    """为本地模拟模式启动 mockup daemon。"""
+
     subprocess.Popen(
         [
             "reachy-mini-daemon",

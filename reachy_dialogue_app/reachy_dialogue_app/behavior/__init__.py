@@ -1,3 +1,8 @@
+"""行为触发子包导出。
+
+对外只暴露 app 其他模块需要的配置加载、标签触发和 payload 转换函数。
+"""
+
 from .action import _play_action_signal
 from .config import (
     _default_behavior_config,

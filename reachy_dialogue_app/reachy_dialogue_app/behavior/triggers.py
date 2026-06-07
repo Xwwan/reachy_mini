@@ -1,3 +1,9 @@
+"""从模型回复中解析并触发行为标签。
+
+行为标签允许对话回复同时驱动表情服务或本地动作库。流式回复会被增量扫描，
+并通过计数器保证同一个标签只触发一次。
+"""
+
 from __future__ import annotations
 
 import re
@@ -13,7 +19,7 @@ TAG_PATTERN = re.compile(r"\[([^:\]\r\n]+):([^\]\r\n]+)\]")
 
 
 class BehaviorTriggerTracker:
-    """Trigger behavior tags once while a streamed reply is being assembled."""
+    """在流式回复拼接过程中只触发新增行为标签。"""
 
     def __init__(self, config: dict[str, Any] | None) -> None:
         self.config = config
@@ -21,6 +27,8 @@ class BehaviorTriggerTracker:
         self.triggered_tag_counts: Counter[tuple[str, str, str]] = Counter()
 
     def trigger_from_fragment(self, fragment: str) -> list[BehaviorTriggerResult]:
+        """接收一段增量文本，并只返回本次新增命中的标签触发结果。"""
+
         if fragment:
             self.buffer += fragment
         return self.trigger_from_text(self.buffer)
@@ -59,6 +67,8 @@ def _extract_behavior_tags(
     text: str,
     config: dict[str, Any] | None,
 ) -> list[BehaviorTag]:
+    """扫描文本中的 [tag:key] 片段，并映射到启用的行为模块。"""
+
     if not text or not config:
         return []
     tag_to_module: dict[str, str] = {}
@@ -93,6 +103,12 @@ def _trigger_behavior_tag(
     tag: BehaviorTag,
     config: dict[str, Any],
 ) -> BehaviorTriggerResult:
+    """按模块配置触发一个行为标签。
+
+    trigger_mode=function 时只返回成功信号，由机器人本地动作队列执行；
+    其他模式会请求外部 HTTP 服务，例如 emoji 服务。
+    """
+
     module_config = (config.get("modules") or {}).get(tag.module)
     if not isinstance(module_config, dict) or not module_config.get("enabled", True):
         return BehaviorTriggerResult(
@@ -189,6 +205,8 @@ def _render_json_body(module_config: dict[str, Any], tag: BehaviorTag) -> Any:
 
 
 def _render_template(value: Any, tag: BehaviorTag, *, quote_key: bool) -> Any:
+    """递归渲染 endpoint/json_body 模板。"""
+
     replacements = {
         "module": tag.module,
         "tag": tag.tag_name,

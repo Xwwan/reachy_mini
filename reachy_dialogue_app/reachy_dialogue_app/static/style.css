@@ -1,3 +1,5 @@
+/* Reachy Dialogue 主界面样式。
+   布局按移动端优先组织：顶部设置、对话区域和控制侧栏在窄屏下会纵向堆叠。 */
 :root {
     color-scheme: light;
     --bg: #f6f7f8;

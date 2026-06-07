@@ -1,3 +1,5 @@
+"""Interaction 服务 SSE 工具。"""
+
 from __future__ import annotations
 
 import json
@@ -11,11 +13,15 @@ from .types import JsonDict
 
 @dataclass(frozen=True)
 class SseEvent:
+    """解析后的单个 Server-Sent Event。"""
+
     event: str
     data: JsonDict
 
 
 def iter_sse_events(response: requests.Response) -> Iterable[SseEvent]:
+    """把 requests 流响应解析成 SseEvent 迭代器。"""
+
     event = "message"
     data_lines: list[str] = []
     for raw_line in response.iter_lines(chunk_size=8192, decode_unicode=True):

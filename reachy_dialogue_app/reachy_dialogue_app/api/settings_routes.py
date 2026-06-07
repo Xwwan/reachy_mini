@@ -1,3 +1,5 @@
+"""设置与健康检查路由。"""
+
 from __future__ import annotations
 
 import threading
@@ -20,6 +22,8 @@ def _register_settings_routes(
     *,
     behavior_config: dict[str, Any] | None = None,
 ) -> None:
+    """注册 settings/health/config 相关接口。"""
+
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         with settings_lock:

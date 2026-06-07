@@ -1,3 +1,9 @@
+"""Interaction 服务代理路由。
+
+前端只访问本 app 的 /api/interaction/*，由这里转发到配置中的 Interaction
+服务。这样页面不需要处理跨域，也能复用机器人播放调度和行为触发 hook。
+"""
+
 from __future__ import annotations
 
 import threading
@@ -50,6 +56,8 @@ def _register_interaction_routes(
     playback_scheduler: RobotAudioPlaybackScheduler | None = None,
     client_factory: Callable[[str], InteractionApiClient] = InteractionApiClient,
 ) -> None:
+    """注册文本流、实时语音和 run 查询相关接口。"""
+
     playback_sink = (
         RobotPlaybackSink(playback_scheduler)
         if playback_scheduler is not None
@@ -124,6 +132,8 @@ def _register_interaction_routes(
     def interaction_text_stream(
         payload: InteractionTextStreamPayload,
     ) -> StreamingResponse:
+        """把文本请求转为 Interaction SSE，并在流中处理音频播放/行为触发。"""
+
         current = _snapshot(settings, settings_lock)
         workflow = _validate_workflow(payload.workflow)
         message = payload.message.strip()

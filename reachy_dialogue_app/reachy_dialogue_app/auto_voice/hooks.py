@@ -1,3 +1,10 @@
+"""自动语音流式输出 hook。
+
+AutoVoiceSession 只负责识别、状态机和对话服务调用；本模块把 Interaction
+返回的 audio/delta/done 事件转换成机器人播放任务和行为触发事件，让会话层
+不用关心具体机器人 IO。
+"""
+
 from __future__ import annotations
 
 import threading
@@ -30,6 +37,8 @@ def _auto_voice_stream_hook_factory(
         tuple[list[tuple[str, dict[str, Any]]], threading.Event | None],
     ],
 ]:
+    """创建按自动语音 session 隔离的流事件 hook。"""
+
     playback_sink = (
         RobotPlaybackSink(playback_scheduler)
         if playback_scheduler is not None
@@ -37,11 +46,15 @@ def _auto_voice_stream_hook_factory(
     )
 
     def factory(session_id: str):
+        # 每个自动语音 session 都有独立的播放 key 和行为追踪器，避免多会话
+        # 并发时把不同回复的音频、动作或触发标签串在一起。
         active_playback_key: str | None = None
         active_fallback_playback_key: str | None = None
         behavior_tracker = BehaviorTriggerTracker(behavior_config)
 
         def current_fallback_playback_key() -> str:
+            """为没有显式 playback_key 的服务响应生成稳定 fallback key。"""
+
             nonlocal active_fallback_playback_key
             if active_fallback_playback_key is None:
                 active_fallback_playback_key = _new_playback_key(
@@ -55,6 +68,8 @@ def _auto_voice_stream_hook_factory(
             active_fallback_playback_key = None
 
         def submit_behavior_actions(behavior_results: list[Any]) -> None:
+            """把文本触发到的动作信号转成机器人 action job。"""
+
             if not playback_sink.active:
                 return
             playback_sink.submit_action(
@@ -69,6 +84,7 @@ def _auto_voice_stream_hook_factory(
             nonlocal active_playback_key
             extras: list[tuple[str, dict[str, Any]]] = []
             if event == "audio":
+                # 流式 TTS 音频到达时立即排队播放；done 事件再补齐完成屏障。
                 audio_base64 = data.get("audio_base64")
                 if (
                     playback_sink.active
@@ -95,6 +111,7 @@ def _auto_voice_stream_hook_factory(
                 return extras, None
 
             if event == "delta":
+                # 文本增量可提前触发表情/动作，使机器人不必等整句回复结束。
                 behavior_results = behavior_tracker.trigger_from_fragment(
                     str(data.get("delta") or "")
                 )
@@ -107,6 +124,8 @@ def _auto_voice_stream_hook_factory(
                 return extras, None
 
             key = active_playback_key or current_fallback_playback_key()
+            # done 事件用于标记一轮机器人播放结束，同时处理服务端可能随 done
+            # 一起返回的整段音频。
             playback_metadata = _playback_metadata_from_payload(data, key)
             behavior_results = behavior_tracker.trigger_from_text(
                 str(data.get("reply") or "")

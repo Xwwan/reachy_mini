@@ -1,3 +1,5 @@
+"""Silero ONNX VAD 推理封装。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,6 +13,8 @@ from .frames import VadFrame
 
 
 class SileroVad:
+    """维护 Silero VAD 的 ONNX Runtime session 和递归状态。"""
+
     """Small wrapper for common Silero VAD ONNX exports."""
 
     def __init__(self, model_path: Path, *, sample_rate: int = SILERO_SAMPLE_RATE):
@@ -43,6 +47,8 @@ class SileroVad:
         self.state = np.zeros((2, 1, 128), dtype=np.float32)
 
     def predict_chunk(self, chunk: np.ndarray) -> VadFrame:
+        """对一个固定大小 chunk 预测语音概率，并返回音量指标。"""
+
         samples = np.asarray(chunk, dtype=np.float32).reshape(-1)
         if samples.shape[0] != SILERO_CHUNK_SIZE:
             raise ValueError(f"Silero VAD expects {SILERO_CHUNK_SIZE} samples.")

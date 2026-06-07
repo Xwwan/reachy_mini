@@ -1,3 +1,10 @@
+"""机器人音频播放调度。
+
+Interaction 服务可能把同一轮回复拆成多个音频 chunk，也可能同时返回文本、
+动作标签和播放回执所需的 metadata。本模块按 playback_key 把 chunk 归组，
+保证同一轮回复顺序播放，并在播放结束后通知上游服务。
+"""
+
 from __future__ import annotations
 
 import base64
@@ -11,11 +18,19 @@ from ..core.constants import OUTPUT_SAMPLE_RATE
 
 
 def _new_playback_key(prefix: str) -> str:
+    """生成仅用于本进程内去重/分组的播放 key。"""
+
     return f"{prefix}:{uuid.uuid4().hex}"
 
 
 @dataclass(frozen=True)
 class PlaybackMetadata:
+    """播放回执需要的上下文。
+
+    run_id + playback_key 足够向 Interaction 服务上报 playback_done/error；
+    workflow/session id 主要用于调试和后续扩展。
+    """
+
     playback_key: str | None = None
     run_id: str | None = None
     interaction_session_id: str | None = None
@@ -24,6 +39,11 @@ class PlaybackMetadata:
 
 @dataclass
 class RobotJob:
+    """发送给机器人工作队列的一项任务。
+
+    一个任务可以包含音频、动作，或仅用于等待前面已推送的流式音频播完。
+    """
+
     audio_base64: str | None = None
     audio_bytes: bytes | None = None
     audio_sample_rate: int = OUTPUT_SAMPLE_RATE
@@ -45,6 +65,8 @@ class RobotAudioChunk:
 
 @dataclass
 class RobotAudioPlaybackGroup:
+    """同一个 playback_key 下的音频分组状态。"""
+
     key: str
     chunks: list[RobotAudioChunk]
     completed: bool = False
@@ -57,7 +79,11 @@ class RobotAudioPlaybackGroup:
 
 
 class RobotAudioPlaybackScheduler:
-    """Stream the current reply immediately while buffering later replies."""
+    """立即播放当前回复，同时缓冲后续回复。
+
+    调度器只在锁内维护分组和顺序，不直接触碰机器人硬件；真正的播放由 main.py
+    中的机器人 job 消费线程完成。
+    """
 
     def __init__(
         self,
@@ -82,6 +108,8 @@ class RobotAudioPlaybackScheduler:
         segment_index: int | None = None,
         playback_metadata: PlaybackMetadata | None = None,
     ) -> str:
+        """接收一个音频 chunk，并在轮到该分组时立即投递到机器人队列。"""
+
         playback_key = key or _new_playback_key("robot-audio")
         audio_bytes = base64.b64decode(audio_base64)
         with self.lock:
@@ -108,6 +136,8 @@ class RobotAudioPlaybackScheduler:
         done_event: threading.Event | None = None,
         playback_metadata: PlaybackMetadata | None = None,
     ) -> str:
+        """标记一个 playback_key 的音频已全部到达。"""
+
         playback_key = key or _new_playback_key("robot-audio")
         with self.lock:
             group = self._group_locked(playback_key, playback_metadata)
@@ -129,6 +159,8 @@ class RobotAudioPlaybackScheduler:
         key: str | None = None,
         playback_metadata: PlaybackMetadata | None = None,
     ) -> str:
+        """一次性提交完整音频/动作并标记完成，适合非流式接口。"""
+
         playback_key = key or _new_playback_key("robot-audio")
         if audio_base64:
             self.enqueue_audio(
@@ -151,6 +183,8 @@ class RobotAudioPlaybackScheduler:
         action_signal: str | None,
         action_config: dict[str, Any] | None = None,
     ) -> None:
+        """单独提交动作任务，不和音频播放分组绑定。"""
+
         if not action_signal:
             return
         self.action_jobs.put(
@@ -161,6 +195,8 @@ class RobotAudioPlaybackScheduler:
         )
 
     def abort(self, key: str | None) -> None:
+        """丢弃尚未播放的分组，用于用户取消或异常中断。"""
+
         if not key:
             return
         with self.lock:
@@ -194,6 +230,12 @@ class RobotAudioPlaybackScheduler:
         return group
 
     def _drain_locked(self) -> None:
+        """在持锁状态下尽可能向机器人队列投递已可播放的内容。
+
+        order[0] 是当前允许播放的分组；后面的分组即使 chunk 已到齐，也必须
+        等前一个分组 complete 后才能释放，避免多轮回复交错出声。
+        """
+
         while self.order:
             key = self.order[0]
             group = self.groups.get(key)
@@ -252,6 +294,8 @@ class RobotAudioPlaybackScheduler:
 
 
 class PlaybackSink(Protocol):
+    """播放 sink 协议，让自动语音/路由代码不用关心是否真的连接了机器人。"""
+
     name: str
     active: bool
 
@@ -292,6 +336,8 @@ class PlaybackSink(Protocol):
 
 @dataclass(frozen=True)
 class RobotPlaybackSink:
+    """真实机器人播放 sink，所有操作委托给调度器。"""
+
     scheduler: RobotAudioPlaybackScheduler
     name: str = "robot"
     active: bool = True
@@ -349,6 +395,12 @@ class RobotPlaybackSink:
 
 @dataclass(frozen=True)
 class NullPlaybackSink:
+    """无机器人环境下的空 sink。
+
+    Web-only 模式仍然需要生成 playback_key 和完成屏障，这样上层状态机可以
+    复用同一套逻辑，只是不实际播放音频或动作。
+    """
+
     name: str = "null"
     active: bool = False
 
@@ -398,6 +450,8 @@ class NullPlaybackSink:
 
 
 def _payload_playback_key(payload: dict[str, Any]) -> str | None:
+    """从服务端 payload 中提取尽量稳定的播放分组 key。"""
+
     explicit_playback_key = _payload_string(payload, "playback_key")
     if explicit_playback_key:
         return explicit_playback_key
@@ -455,6 +509,8 @@ def _playback_metadata_from_payload(
     payload: dict[str, Any],
     fallback: str | None = None,
 ) -> PlaybackMetadata:
+    """把 Interaction payload 转成播放调度和回执共用的 metadata。"""
+
     playback_key = _playback_key_from_payload(payload, fallback)
     return PlaybackMetadata(
         playback_key=playback_key,
@@ -468,6 +524,8 @@ def _followup_playback_group_id(
     payload: dict[str, Any],
     existing: dict[str, Any] | None = None,
 ) -> str:
+    """为 follow-up 流选择播放分组，优先复用已有分组。"""
+
     candidates = _followup_playback_group_ids(payload)
     if existing:
         for candidate in candidates:

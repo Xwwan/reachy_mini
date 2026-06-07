@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Interaction 流式回复诊断脚本。
+
+脚本会请求文本/语音流接口，记录事件到达时间、音频 chunk 时长和积压情况，
+用于排查 TTS 流式播放是否产生延迟。
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -26,6 +32,8 @@ DEFAULT_WORKFLOW = "chat"
 
 
 def main() -> None:
+    """解析 CLI 参数并运行一次 probe。"""
+
     parser = argparse.ArgumentParser(
         description=(
             "Probe the real dialogue app SSE path and measure streamed audio "
@@ -116,6 +124,8 @@ def run_probe(
     timeout: float,
     save_audio: Path | None,
 ) -> dict[str, Any]:
+    """执行一次流式请求并返回统计摘要。"""
+
     app_url = _with_trailing_slash(app_url)
     if direct_service:
         service_url = _with_trailing_slash(service_url or DEFAULT_SERVICE_URL)
@@ -214,6 +224,8 @@ def run_probe(
 
 
 def _iter_sse_events(response: requests.Response):
+    """解析 requests 响应中的 SSE 事件。"""
+
     event_name = "message"
     data_lines: list[str] = []
     for raw_line in response.iter_lines(chunk_size=8192, decode_unicode=True):

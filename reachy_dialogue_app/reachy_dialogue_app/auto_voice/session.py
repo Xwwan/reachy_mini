@@ -1,3 +1,10 @@
+"""自动语音核心状态机。
+
+AutoVoiceSession 把“持续听音 -> VAD 分段 -> 实时转写 -> 调用对话服务 ->
+等待机器人/浏览器播放 -> 回到监听”串成一个后台线程。它同时支持浏览器本地
+麦克风和机器人麦克风，二者进入 VAD 前都会被重采样到 Silero 期望的采样率。
+"""
+
 from __future__ import annotations
 
 import base64
@@ -31,6 +38,12 @@ from .types import (
 
 
 class AutoVoiceSession:
+    """单个自动语音会话。
+
+    对外接口很小：submit_pcm16_base64 接收浏览器音频，event_stream 推送 SSE，
+    stop 停止后台线程。其余私有方法组成会话状态机。
+    """
+
     def __init__(
         self,
         *,
@@ -59,6 +72,8 @@ class AutoVoiceSession:
         self.stream_hook = stream_hook
         self.vad = SileroVad(model_path, sample_rate=config.vad.sample_rate)
         self.segmenter = UtteranceSegmenter(self.vad, config.vad)
+        # local 模式通过 HTTP chunk 入队；robot 模式不使用这个队列，而是在
+        # _read_samples 中直接轮询 robot_audio_source。
         self.input_queue: queue.Queue[np.ndarray | None] = queue.Queue(
             maxsize=config.local_chunk_queue_size
         )
@@ -83,6 +98,12 @@ class AutoVoiceSession:
         self.thread.start()
 
     def submit_pcm16_base64(self, audio_base64: str, sample_rate: int) -> bool:
+        """接收浏览器麦克风 PCM16 chunk。
+
+        返回 False 表示后端当前不接受输入，例如正在转写/说话/冷却，前端可据此
+        更新 dropped chunk 诊断而不是误以为网络失败。
+        """
+
         if self.mode != "local":
             raise RuntimeError("Only local auto voice sessions accept browser chunks.")
         with self.lock:
@@ -130,6 +151,8 @@ class AutoVoiceSession:
             )
 
     def event_stream(self) -> Iterable[tuple[str, dict[str, Any]]]:
+        """生成 SSE 事件流；连接建立时先补一份快照方便前端恢复状态。"""
+
         self._emit("snapshot", asdict(self.snapshot()))
         self._emit(
             "gate_state",
@@ -146,6 +169,8 @@ class AutoVoiceSession:
             yield item
 
     def _run(self) -> None:
+        """后台主循环：读音频、喂给 VAD、根据 VAD 事件驱动状态流转。"""
+
         self._set_state("listening")
         try:
             while not self.stop_event.is_set():
@@ -156,6 +181,8 @@ class AutoVoiceSession:
                 if self.state not in {"listening", "user_speaking"}:
                     continue
                 if self.active_live_session_id is not None:
+                    # 用户仍在说话时，把后续音频持续送入 Interaction live session，
+                    # 同时按节流周期拉取中间转写给前端展示。
                     self._send_audio_to_live_session(
                         self.active_live_session_id,
                         samples,
@@ -193,6 +220,8 @@ class AutoVoiceSession:
             self._set_state("stopped")
 
     def _read_samples(self) -> np.ndarray | None:
+        """按当前输入模式读取一小段归一化音频。"""
+
         if self.mode == "robot":
             if self.robot_audio_source is None:
                 raise RuntimeError("Robot auto voice session has no audio source.")
@@ -223,6 +252,8 @@ class AutoVoiceSession:
         return np.clip(samples * gain, -1.0, 1.0).astype(np.float32, copy=False)
 
     def _start_streaming_transcription(self, initial_audio: np.ndarray | None) -> None:
+        """为一次用户发声创建 live session，并送入 VAD 已缓存的开头音频。"""
+
         self.utterance_count += 1
         self.last_transcript = ""
         self.last_transcript_poll = 0.0
@@ -248,6 +279,8 @@ class AutoVoiceSession:
             self._emit_live_transcript(force=True)
 
     def _finish_streaming_transcription(self) -> None:
+        """结束当前 live session，并根据是否启用唤醒门控选择处理路径。"""
+
         live_session_id = self.active_live_session_id
         if live_session_id is None:
             self._set_state("listening")
@@ -259,6 +292,12 @@ class AutoVoiceSession:
             self._process_live_session(live_session_id)
 
     def _process_gate_controlled_session(self, live_session_id: str) -> None:
+        """带唤醒词门控的处理路径。
+
+        waiting_wake 状态只识别唤醒词，不把文本发送给聊天服务；awake 状态才把
+        用户文本送入对话。退出词和空闲超时会让 session 回到 waiting_wake。
+        """
+
         self._set_state("transcribing")
 
         try:
@@ -345,6 +384,8 @@ class AutoVoiceSession:
             self.last_transcript = ""
 
     def _process_text_chat_session(self, transcript: str) -> None:
+        """把已识别文本发送给聊天工作流，并把流式回复继续转发给前端/hook。"""
+
         output_audio_seconds = 0.0
         output_audio_started_at: float | None = None
         reply_parts: list[str] = []
@@ -401,6 +442,8 @@ class AutoVoiceSession:
             self._set_state("listening")
 
     def _process_live_session(self, live_session_id: str) -> None:
+        """无唤醒门控时直接让 Interaction 服务完成转写和回复。"""
+
         self._set_state("transcribing")
 
         output_audio_seconds = 0.0
@@ -478,6 +521,8 @@ class AutoVoiceSession:
         *,
         is_final: bool,
     ) -> None:
+        """把 float 音频切成较小 PCM16 chunk 后发送给 Interaction live 接口。"""
+
         pcm_base64 = float_to_pcm16_base64(audio)
         raw = base64.b64decode(pcm_base64)
         chunk_size = 5120
@@ -551,6 +596,8 @@ class AutoVoiceSession:
         output_audio_seconds: float,
         output_audio_started_at: float | None,
     ) -> None:
+        """等待输出音频播放完成，避免机器人说话时又重新打开麦克风。"""
+
         wait_seconds = self._estimated_output_playback_wait_seconds(
             output_audio_seconds,
             output_audio_started_at,
@@ -587,6 +634,8 @@ class AutoVoiceSession:
         return max(0.0, estimated_wait)
 
     def _cooldown_then_listen(self) -> None:
+        """短暂冷却并清理残留输入，防止上一轮尾音触发下一轮。"""
+
         self._set_state("cooldown")
         time.sleep(max(0.0, self.config.vad.cooldown_ms / 1000.0))
         self._drain_local_input_queue()
@@ -594,6 +643,8 @@ class AutoVoiceSession:
         self._set_state("listening")
 
     def _check_wake_idle_timeout(self) -> None:
+        """awake 状态长时间无活动时自动回到等待唤醒。"""
+
         if not self.config.wake_gate.enabled:
             return
         if self.gate_state != "awake":
@@ -719,6 +770,8 @@ def _reply_text_from_keys(data: dict[str, Any], keys: tuple[str, ...]) -> str:
 
 
 def _contains_configured_phrase(transcript: str, phrases: tuple[str, ...]) -> bool:
+    """在规范化后的文本中查找配置短语，兼容大小写、空白和标点差异。"""
+
     normalized_transcript = _normalize_phrase(transcript)
     if not normalized_transcript:
         return False

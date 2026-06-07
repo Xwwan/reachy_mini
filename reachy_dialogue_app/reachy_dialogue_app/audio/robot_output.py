@@ -1,3 +1,9 @@
+"""把后端音频/动作任务真正写入 Reachy Mini。
+
+playback.py 只负责排队和分组，本模块运行在机器人工作线程里：解码 PCM、
+必要时重采样、推送到 media.push_audio_sample，并在需要时上报播放成功/失败。
+"""
+
 from __future__ import annotations
 
 import base64
@@ -16,11 +22,15 @@ from .playback import RobotJob
 
 @dataclass(frozen=True)
 class RobotJobResult:
+    """机器人任务执行结果，用于决定是否向 Interaction 上报 playback_error。"""
+
     ok: bool
     error: str | None = None
 
 
 def _handle_robot_job(reachy_mini: ReachyMini, job: RobotJob) -> RobotJobResult:
+    """执行一个机器人任务：播放音频、等待流式音频结束或触发动作。"""
+
     try:
         audio_bytes = job.audio_bytes
         if audio_bytes is None and job.audio_base64:
@@ -43,6 +53,8 @@ def _report_robot_job_playback_result(
     job: RobotJob,
     result: RobotJobResult,
 ) -> dict | None:
+    """把机器人播放结果回写到 Interaction 服务。"""
+
     metadata = job.playback_metadata
     if metadata is None or not metadata.playback_key or not metadata.run_id:
         return None
@@ -65,6 +77,8 @@ def _push_pcm16_audio(
     job: RobotJob,
     audio_bytes: bytes,
 ) -> None:
+    """把 PCM16 字节流转换成机器人输出采样率的 float32 音频。"""
+
     media = reachy_mini.media
     _ensure_streaming_playback_started(media)
 
@@ -125,6 +139,12 @@ def _remember_streamed_audio_deadline(
     playback_key: str,
     duration_seconds: float,
 ) -> None:
+    """记录某个 playback_key 预计播放到什么时候。
+
+    Reachy media 当前没有逐 chunk 的完成回调，所以用已推送音频总时长估算
+    一个 deadline，后续空 job 会 sleep 到这个时间点再放行状态机。
+    """
+
     deadlines = _stream_deadlines(reachy_mini)
     now = time.monotonic()
     deadlines[playback_key] = max(now, deadlines.get(playback_key, now)) + max(

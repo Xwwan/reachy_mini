@@ -1,1 +1,1 @@
-"""FastAPI route modules for reachy_dialogue_app."""
+"""API 路由注册辅助模块。"""

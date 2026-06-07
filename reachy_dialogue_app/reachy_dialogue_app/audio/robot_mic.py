@@ -1,3 +1,10 @@
+"""机器人麦克风录音和实时语音转写。
+
+这里服务两类功能：按住说话式的机器人麦克风交互，以及用于排查硬件输入的
+录音回放测试。采样来自 Reachy media.get_audio_sample，进入 Interaction
+live 接口前会转成单声道 PCM16。
+"""
+
 from __future__ import annotations
 
 import base64
@@ -24,6 +31,8 @@ from ..interaction import InteractionApiClient
 
 @dataclass
 class RecordedAudio:
+    """一次录音结束后的音频摘要和 PCM16/base64 数据。"""
+
     audio_base64: str
     sample_rate: int
     channels: int
@@ -35,6 +44,8 @@ class RecordedAudio:
 
 @dataclass
 class AudioLevel:
+    """前端音量条和录音状态展示所需的实时音频指标。"""
+
     is_recording: bool
     duration_seconds: float
     rms: float
@@ -44,6 +55,8 @@ class AudioLevel:
 
 @dataclass
 class LiveTranscript:
+    """Interaction live session 返回的实时字幕状态。"""
+
     text: str
     is_final: bool
     error: str | None = None
@@ -71,6 +84,8 @@ class BehaviorTriggerResult:
 
 
 def _wait_for_robot_audio_sample(reachy_mini: ReachyMini) -> np.ndarray | None:
+    """启动录音后等待第一帧音频，用来确认机器人麦克风真的可用。"""
+
     start_time = time.time()
     while time.time() - start_time < ROBOT_MIC_READY_TIMEOUT_SECONDS:
         sample = reachy_mini.media.get_audio_sample()
@@ -81,6 +96,8 @@ def _wait_for_robot_audio_sample(reachy_mini: ReachyMini) -> np.ndarray | None:
 
 
 def _robot_sample_to_mono(sample: np.ndarray) -> np.ndarray:
+    """把不同形状的机器人音频 sample 统一成一维单声道。"""
+
     audio = np.asarray(sample, dtype=np.float32)
     if audio.ndim == 0:
         return audio.reshape(1)
@@ -102,6 +119,12 @@ def _robot_samples_to_mono(samples: list[np.ndarray]) -> np.ndarray:
 
 
 class InteractionLiveVoiceSession:
+    """Interaction live 语音会话的本地代理。
+
+    录音线程只负责 submit_pcm；后台发送线程按固定 chunk 大小上传音频，字幕
+    由前端轮询 get_transcript 获取。
+    """
+
     def __init__(
         self,
         *,
@@ -163,6 +186,8 @@ class InteractionLiveVoiceSession:
         )
 
     def submit_pcm(self, pcm: bytes) -> None:
+        """向后台发送线程投递 PCM16 音频。"""
+
         if not pcm:
             return
         try:
@@ -272,6 +297,8 @@ class InteractionLiveVoiceSession:
             self.last_error = error
 
     def _send_loop(self) -> None:
+        """把任意大小的 PCM 片段拼成 LIVE_CHUNK_BYTES 后上传。"""
+
         buffer = bytearray()
         while True:
             item = self.queue.get()
@@ -316,6 +343,8 @@ class InteractionLiveVoiceSession:
 
 
 class RobotMicRecorder:
+    """按住说话式机器人麦克风录音器。"""
+
     def __init__(self, reachy_mini: ReachyMini) -> None:
         self.reachy_mini = reachy_mini
         self.lock = threading.Lock()
@@ -346,6 +375,8 @@ class RobotMicRecorder:
         interaction_session_id: str,
         workflow: str,
     ) -> None:
+        """开始录音并同步创建 Interaction live session。"""
+
         with self.lock:
             if self.is_recording:
                 raise RuntimeError("机器人麦克风已经在录音。")
@@ -444,6 +475,8 @@ class RobotMicRecorder:
             self.is_processing_reply = False
 
     def _stop_recording(self) -> RecordedAudio:
+        """停止媒体录音，校验时长/音量，并生成最终 PCM16 payload。"""
+
         with self.lock:
             if not self.is_recording:
                 raise RuntimeError("机器人麦克风当前没有在录音。")
@@ -563,6 +596,8 @@ class RobotMicRecorder:
                 time.sleep(ROBOT_MIC_POLL_SECONDS)
 
     def _capture_sample(self, sample: np.ndarray) -> None:
+        """保存原始 sample，同时把单声道 PCM16 送到实时转写会话。"""
+
         mono = _robot_sample_to_mono(sample)
         mono = np.clip(mono, -1.0, 1.0)
         rms = float(np.sqrt(np.mean(np.square(mono, dtype=np.float64))))
@@ -583,6 +618,8 @@ class RobotMicRecorder:
 
 
 class RobotMicPlaybackTester:
+    """机器人麦克风本地回放测试，不调用 Interaction 服务。"""
+
     def __init__(self, reachy_mini: ReachyMini) -> None:
         self.reachy_mini = reachy_mini
         self.lock = threading.Lock()

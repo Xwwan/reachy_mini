@@ -1,3 +1,5 @@
+"""API 路由共享校验和默认设置。"""
+
 from __future__ import annotations
 
 import os
@@ -14,6 +16,8 @@ from ..interaction import InteractionApiError
 
 
 def _validate_workflow(value: str) -> str:
+    """限制 workflow 只能是后端当前支持的 chat/onboarding。"""
+
     workflow = value.strip()
     if workflow not in {"chat", "onboarding"}:
         raise HTTPException(
@@ -24,6 +28,8 @@ def _validate_workflow(value: str) -> str:
 
 
 def _validate_input_mode(value: str) -> str:
+    """限制输入模式只能是 local/robot。"""
+
     input_mode = value.strip()
     if input_mode not in {"text", "local", "robot", "auto"}:
         raise HTTPException(
@@ -44,6 +50,8 @@ def _required_string(value: str, field_name: str) -> str:
 
 
 def _interaction_http_exception(exc: InteractionApiError) -> HTTPException:
+    """把 InteractionApiError 转成 FastAPI 可返回的 HTTPException。"""
+
     return HTTPException(
         status_code=exc.status_code or 502,
         detail=exc.message,
@@ -51,6 +59,8 @@ def _interaction_http_exception(exc: InteractionApiError) -> HTTPException:
 
 
 def _default_settings() -> dict[str, Any]:
+    """前端页面启动时使用的默认设置。"""
+
     return {
         "service_url": os.environ.get("REACHY_DIALOGUE_SERVICE_URL", DEFAULT_SERVICE_URL),
         "conversation_id": os.environ.get(

@@ -1,3 +1,9 @@
+"""自动语音会话管理器。
+
+Manager 负责创建、保存和停止 AutoVoiceSession。它不直接处理音频，而是把
+服务地址、机器人麦克风读取函数和流式播放 hook 注入到每个 session 中。
+"""
+
 from __future__ import annotations
 
 import threading
@@ -17,6 +23,8 @@ from .types import (
 
 
 class AutoVoiceManager:
+    """线程安全的自动语音 session registry。"""
+
     def __init__(
         self,
         *,
@@ -42,8 +50,12 @@ class AutoVoiceManager:
         tts_enabled: bool,
         workflow: str = "chat",
     ) -> AutoVoiceSession:
+        """创建新的自动语音 session，并先在 Interaction 服务侧开对话会话。"""
+
         session_id = f"auto_{uuid.uuid4().hex}"
         service_url = self.service_url_getter()
+        # 自动语音最终仍走 Interaction API；这里先建立一条长生命周期的
+        # interaction_session，后续每段语音都复用它来保留上下文。
         interaction_session = InteractionApiClient(service_url).create_session(
             workflow=workflow,  # type: ignore[arg-type]
             conversation_id=conversation_id,
@@ -64,6 +76,7 @@ class AutoVoiceManager:
             model_path=self.model_path,
             config=self.config,
             robot_audio_source=self.robot_audio_source,
+            # hook 只按 session_id 构造一次，内部会维护播放分组和行为触发状态。
             stream_hook=(
                 self.stream_hook_factory(session_id)
                 if self.stream_hook_factory is not None
@@ -89,4 +102,3 @@ class AutoVoiceManager:
 
     def snapshot(self, session_id: str) -> AutoVoiceSnapshot:
         return self.get(session_id).snapshot()
-

@@ -1,3 +1,5 @@
+"""Follow-up 与记忆维护代理路由。"""
+
 from __future__ import annotations
 
 import threading
@@ -38,6 +40,8 @@ def _register_followup_memory_routes(
     playback_scheduler: RobotAudioPlaybackScheduler | None = None,
     client_factory: Callable[[str], InteractionApiClient] = InteractionApiClient,
 ) -> None:
+    """注册待处理 follow-up、follow-up 流和记忆维护接口。"""
+
     playback_sink = (
         RobotPlaybackSink(playback_scheduler)
         if playback_scheduler is not None
@@ -84,6 +88,8 @@ def _register_followup_memory_routes(
         conversation_id: str,
         tts_enabled: bool = False,
     ) -> StreamingResponse:
+        """流式运行 follow-up，并复用机器人播放/行为触发逻辑。"""
+
         current = _snapshot(settings, settings_lock)
         conversation_id = _required_string(conversation_id, "conversation_id")
 

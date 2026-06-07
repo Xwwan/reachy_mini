@@ -1,3 +1,9 @@
+"""自动语音配置读取与规范化。
+
+配置来源按优先级合并：环境变量 > behavior_config.yaml > 代码默认值。
+这样既方便部署时临时调参，也能让默认配置在没有外部文件时直接可用。
+"""
+
 from __future__ import annotations
 
 import os
@@ -10,6 +16,8 @@ from .types import AutoVoiceConfig, WakeGateConfig
 
 
 def _auto_voice_model_path(behavior_config: dict[str, Any] | None = None) -> Path:
+    """解析 Silero VAD 模型路径。"""
+
     auto_voice = _auto_voice_section(behavior_config)
     configured = auto_voice.get("model_path")
     return Path(
@@ -20,6 +28,8 @@ def _auto_voice_model_path(behavior_config: dict[str, Any] | None = None) -> Pat
 
 
 def _auto_voice_config(behavior_config: dict[str, Any] | None = None) -> AutoVoiceConfig:
+    """从行为配置和环境变量构造 AutoVoiceConfig。"""
+
     auto_voice = _auto_voice_section(behavior_config)
     vad_config = auto_voice.get("vad")
     if not isinstance(vad_config, dict):
@@ -112,6 +122,8 @@ def _auto_voice_section(behavior_config: dict[str, Any] | None) -> dict[str, Any
 
 
 def _wake_gate_config(auto_voice: dict[str, Any]) -> WakeGateConfig:
+    """读取唤醒词门控配置；缺省时保持关闭，避免影响普通连续对话。"""
+
     wake_gate = auto_voice.get("wake_gate")
     if not isinstance(wake_gate, dict):
         return WakeGateConfig()
@@ -136,6 +148,8 @@ def _int_setting(
     env_key: str,
     default: int,
 ) -> int:
+    """读取整数配置，非法值自动回退默认值。"""
+
     value = os.environ.get(env_key, config.get(key, default))
     try:
         return int(value)
@@ -149,6 +163,8 @@ def _float_setting(
     env_key: str,
     default: float,
 ) -> float:
+    """读取浮点配置，非法值自动回退默认值。"""
+
     value = os.environ.get(env_key, config.get(key, default))
     try:
         return float(value)
