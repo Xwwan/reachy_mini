@@ -37,8 +37,22 @@ def _auto_voice_stream_hook_factory(
     )
 
     def factory(session_id: str):
-        playback_key = _new_playback_key(f"auto-voice-{session_id}")
+        active_playback_key: str | None = None
+        active_fallback_playback_key: str | None = None
         behavior_tracker = BehaviorTriggerTracker(behavior_config)
+
+        def current_fallback_playback_key() -> str:
+            nonlocal active_fallback_playback_key
+            if active_fallback_playback_key is None:
+                active_fallback_playback_key = _new_playback_key(
+                    f"auto-voice-{session_id}"
+                )
+            return active_fallback_playback_key
+
+        def reset_playback_group() -> None:
+            nonlocal active_playback_key, active_fallback_playback_key
+            active_playback_key = None
+            active_fallback_playback_key = None
 
         def submit_behavior_actions(behavior_results: list[Any]) -> None:
             if not playback_sink.active:
@@ -52,9 +66,8 @@ def _auto_voice_stream_hook_factory(
             event: str,
             data: dict[str, Any],
         ) -> tuple[list[tuple[str, dict[str, Any]]], threading.Event | None]:
+            nonlocal active_playback_key
             extras: list[tuple[str, dict[str, Any]]] = []
-            playback_metadata = _playback_metadata_from_payload(data, playback_key)
-            key = playback_metadata.playback_key
             if event == "audio":
                 audio_base64 = data.get("audio_base64")
                 if (
@@ -62,7 +75,12 @@ def _auto_voice_stream_hook_factory(
                     and isinstance(audio_base64, str)
                     and audio_base64
                 ):
-                    playback_sink.enqueue_audio(
+                    playback_metadata = _playback_metadata_from_payload(
+                        data,
+                        active_playback_key or current_fallback_playback_key(),
+                    )
+                    key = playback_metadata.playback_key
+                    active_playback_key = playback_sink.enqueue_audio(
                         key,
                         audio_base64=audio_base64,
                         sample_rate=int(
@@ -88,6 +106,8 @@ def _auto_voice_stream_hook_factory(
             if event != "done":
                 return extras, None
 
+            key = active_playback_key or current_fallback_playback_key()
+            playback_metadata = _playback_metadata_from_payload(data, key)
             behavior_results = behavior_tracker.trigger_from_text(
                 str(data.get("reply") or "")
             )
@@ -101,7 +121,7 @@ def _auto_voice_stream_hook_factory(
                 and isinstance(audio_base64, str)
                 and audio_base64
             ):
-                playback_sink.enqueue_audio(
+                active_playback_key = playback_sink.enqueue_audio(
                     key,
                     audio_base64=audio_base64,
                     sample_rate=int(
@@ -113,8 +133,10 @@ def _auto_voice_stream_hook_factory(
                     segment_index=_optional_int(data.get("segment_index")),
                     playback_metadata=playback_metadata,
                 )
+                key = active_playback_key
 
             if not playback_sink.active:
+                reset_playback_group()
                 return extras, None
 
             done_event = threading.Event()
@@ -123,6 +145,7 @@ def _auto_voice_stream_hook_factory(
                 done_event=done_event,
                 playback_metadata=playback_metadata,
             )
+            reset_playback_group()
             return extras, done_event
 
         return hook

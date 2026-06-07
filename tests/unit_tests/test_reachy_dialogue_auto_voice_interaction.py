@@ -294,6 +294,64 @@ def test_auto_voice_hook_triggers_split_action_tag_before_done() -> None:
     assert final_job.report_playback_done is True
 
 
+def test_auto_voice_hook_completes_audio_group_when_done_has_new_run_id() -> None:
+    jobs: queue.Queue[RobotJob] = queue.Queue()
+    scheduler = RobotAudioPlaybackScheduler(jobs)
+    hook = _auto_voice_stream_hook_factory(scheduler, {"enabled": False})("session_1")
+
+    extras, barrier = hook(
+        "audio",
+        {
+            "audio_base64": "AAAA",
+            "sample_rate": 24000,
+        },
+    )
+
+    assert extras == []
+    assert barrier is None
+    audio_job = jobs.get_nowait()
+    audio_key = audio_job.playback_metadata.playback_key
+
+    extras, barrier = hook(
+        "done",
+        {
+            "reply": "你好",
+            "run_id": "irun_auto_1",
+        },
+    )
+
+    assert extras == []
+    assert barrier is not None
+    final_job = jobs.get_nowait()
+    assert final_job.audio_bytes is None
+    assert final_job.playback_metadata.playback_key == audio_key
+    assert final_job.done_event is barrier
+    assert jobs.empty()
+
+
+def test_auto_voice_hook_uses_new_fallback_key_for_next_turn() -> None:
+    jobs: queue.Queue[RobotJob] = queue.Queue()
+    scheduler = RobotAudioPlaybackScheduler(jobs)
+    hook = _auto_voice_stream_hook_factory(scheduler, {"enabled": False})("session_1")
+
+    hook("audio", {"audio_base64": "AAAA", "sample_rate": 24000})
+    first_audio_job = jobs.get_nowait()
+    hook("done", {"reply": "第一句"})
+    first_final_job = jobs.get_nowait()
+
+    hook("audio", {"audio_base64": "AAAA", "sample_rate": 24000})
+    second_audio_job = jobs.get_nowait()
+    hook("done", {"reply": "第二句"})
+    second_final_job = jobs.get_nowait()
+
+    first_key = first_audio_job.playback_metadata.playback_key
+    second_key = second_audio_job.playback_metadata.playback_key
+    assert first_key != second_key
+    assert first_final_job.playback_metadata.playback_key == first_key
+    assert second_final_job.playback_metadata.playback_key == second_key
+    assert jobs.empty()
+
+
 def test_auto_voice_playback_wait_subtracts_streamed_audio_time(monkeypatch) -> None:
     client = FakeLiveClient()
     session = _make_session(client)
