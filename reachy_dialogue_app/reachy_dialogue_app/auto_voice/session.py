@@ -551,11 +551,32 @@ class AutoVoiceSession:
         output_audio_seconds: float,
         output_audio_started_at: float | None,
     ) -> None:
+        wait_seconds = self._estimated_output_playback_wait_seconds(
+            output_audio_seconds,
+            output_audio_started_at,
+        )
         if barrier is not None:
-            barrier.wait(timeout=max(0.0, float(self.config.service_timeout_seconds)))
+            if wait_seconds <= 0:
+                return
+            completed = barrier.wait(timeout=wait_seconds)
+            if not completed:
+                self._emit(
+                    "warning",
+                    {
+                        "message": "robot playback completion timed out; reopening auto voice input",
+                        "timeout_seconds": wait_seconds,
+                    },
+                )
             return
+        time.sleep(wait_seconds)
+
+    def _estimated_output_playback_wait_seconds(
+        self,
+        output_audio_seconds: float,
+        output_audio_started_at: float | None,
+    ) -> float:
         if output_audio_seconds <= 0:
-            return
+            return 0.0
         estimated_wait = output_audio_seconds + self.config.playback_wait_grace_seconds
         if output_audio_started_at is not None:
             elapsed_since_audio_start = time.monotonic() - output_audio_started_at
@@ -563,7 +584,7 @@ class AutoVoiceSession:
         max_wait = float(self.config.playback_wait_max_seconds)
         if max_wait > 0:
             estimated_wait = min(estimated_wait, max_wait)
-        time.sleep(max(0.0, estimated_wait))
+        return max(0.0, estimated_wait)
 
     def _cooldown_then_listen(self) -> None:
         self._set_state("cooldown")

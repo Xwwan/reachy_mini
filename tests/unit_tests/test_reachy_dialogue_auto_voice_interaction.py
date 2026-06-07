@@ -319,3 +319,43 @@ def test_auto_voice_playback_wait_subtracts_streamed_audio_time(monkeypatch) -> 
     )
 
     assert sleeps == [pytest.approx(2.1)]
+
+
+def test_auto_voice_playback_barrier_timeout_uses_audio_estimate(monkeypatch) -> None:
+    client = FakeLiveClient()
+    session = _make_session(client)
+    waits = []
+
+    class FakeBarrier:
+        def wait(self, timeout: float) -> bool:
+            waits.append(timeout)
+            return False
+
+    class FakeTime:
+        @staticmethod
+        def monotonic() -> float:
+            return 13.0
+
+        @staticmethod
+        def sleep(seconds: float) -> None:
+            raise AssertionError("barrier path should not call sleep")
+
+    monkeypatch.setattr(session_module, "time", FakeTime)
+
+    session.config.service_timeout_seconds = 120
+    session.config.playback_wait_grace_seconds = 0.1
+    session.config.playback_wait_max_seconds = 0.0
+    session._wait_for_output_playback(
+        barrier=FakeBarrier(),
+        output_audio_seconds=5.0,
+        output_audio_started_at=10.0,
+    )
+
+    assert waits == [pytest.approx(2.1)]
+    assert session.events.get_nowait() == (
+        "warning",
+        {
+            "message": "robot playback completion timed out; reopening auto voice input",
+            "timeout_seconds": pytest.approx(2.1),
+        },
+    )
